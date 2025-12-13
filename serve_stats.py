@@ -42,7 +42,6 @@ TOKEN_LIMIT_WEEK = int(os.environ.get("TOKEN_LIMIT_WEEK", "1000000"))
 CONTEXT_WINDOW_TOKENS = int(os.environ.get("CONTEXT_WINDOW_TOKENS", "272000"))
 CONTEXT_WINDOW_USED_FALLBACK = os.environ.get("CONTEXT_WINDOW_USED")
 CODEX_BUDGET_COMMAND = os.environ.get("CODEX_BUDGET_COMMAND", "").strip()
-OVERRIDES_PATH = Path(os.environ.get("OVERRIDES_PATH", "task_overrides.json"))
 
 load_dotenv()
 
@@ -108,7 +107,6 @@ def is_logged_in(session: requests.Session) -> bool:
         return False
     return bool(payload.get("data"))
 
-
 def login_ctfd(session: requests.Session) -> bool:
     if not TEAM_EMAIL or not TEAM_PASSWORD:
         return False
@@ -124,7 +122,6 @@ def login_ctfd(session: requests.Session) -> bool:
     if resp.status_code == 403 or "cf-turnstile" in body:
         return False
     return is_logged_in(session)
-
 
 def fetch_solved_ids_cached(now_ts: float) -> set[int]:
     try:
@@ -175,7 +172,6 @@ def fetch_solved_ids_cached(now_ts: float) -> set[int]:
     _SOLVES_CACHE["ids"] = solved
     return solved
 
-
 def fetch_challenges_cached(now_ts: float) -> dict[int, Mapping[str, object]]:
     try:
         cached_ts = float(_CHALLENGES_CACHE.get("ts") or 0.0)
@@ -214,7 +210,6 @@ def fetch_challenges_cached(now_ts: float) -> dict[int, Mapping[str, object]]:
     _CHALLENGES_CACHE["by_id"] = by_id
     return by_id
 
-
 def fetch_challenge_name(session: requests.Session, challenge_id: int) -> Optional[str]:
     try:
         resp = session.get(
@@ -236,7 +231,6 @@ def fetch_challenge_name(session: requests.Session, challenge_id: int) -> Option
     name = data.get("name")
     return str(name) if isinstance(name, str) and name else None
 
-
 def _format_tokens(value: int) -> str:
     if value >= 1_000_000:
         return f"{value / 1_000_000:.1f}M"
@@ -247,20 +241,11 @@ def _format_tokens(value: int) -> str:
     return str(value)
 
 
-def _bar(used: int, limit: int, width: int = 20) -> str:
-    if limit <= 0:
-        return "[" + ("░" * width) + "]"
-    ratio = min(max(used / limit, 0.0), 1.0)
-    filled = int(round(ratio * width))
-    return "[" + ("█" * filled) + ("░" * (width - filled)) + "]"
-
-
 def _percent_left(used: int, limit: int) -> int:
     if limit <= 0:
         return 100
     ratio = min(max(used / limit, 0.0), 1.0)
     return int(round((1.0 - ratio) * 100))
-
 
 def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
     if not CODEX_BUDGET_COMMAND:
@@ -303,7 +288,6 @@ def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 sock = Sock(app)
 
-
 def format_thinking_html(text: str) -> str:
     text = strip_ansi(text or "")
     max_lines = int(os.environ.get("MAX_THINKING_RENDER_LINES", "800"))
@@ -329,7 +313,7 @@ def format_thinking_html(text: str) -> str:
         content = escape(line)
         if stripped.startswith("**") and stripped.endswith("**") and len(stripped) > 4:
             klass = "term-heading"
-            content = escape(stripped.strip("*").strip())
+            content = escape(stripped.strip("* ").strip())
         elif stripped.lower() == "thinking":
             klass = "term-muted"
         elif stripped == "exec":
@@ -371,7 +355,6 @@ def load_task_thinking(task_name: str) -> Optional[str]:
         return content[:200_000] + "\n\n[truncated]"
     return content
 
-
 def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[str]:
     if not task_name:
         return None
@@ -392,7 +375,6 @@ def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[
         data = prefix + data
     return strip_ansi(data.decode("utf-8", errors="replace"))
 
-
 def extract_thinking_from_stream(text: str) -> str:
     if not text:
         return ""
@@ -405,7 +387,6 @@ def extract_thinking_from_stream(text: str) -> str:
     if snippet:
         snippet = snippet[1:]
     return "\n".join(snippet).rstrip()
-
 
 def load_entries() -> List[Mapping[str, object]]:
     entries: List[Mapping[str, object]] = []
@@ -425,7 +406,6 @@ def load_entries() -> List[Mapping[str, object]]:
     except OSError:
         return entries
     return entries
-
 
 def mark_stale_running(entries: List[Mapping[str, object]], now_ts: float) -> List[Mapping[str, object]]:
     latest_by_id: dict[int, Mapping[str, object]] = {}
@@ -457,7 +437,6 @@ def mark_stale_running(entries: List[Mapping[str, object]], now_ts: float) -> Li
         )
     return out
 
-
 def mark_attempted_without_success(entries: List[Mapping[str, object]], now_ts: float) -> List[Mapping[str, object]]:
     # If we have logs for a task but no successful 'done' flag, mark it failed-ish
     # so the dashboard doesn't keep it queued forever after restarts.
@@ -478,7 +457,6 @@ def mark_attempted_without_success(entries: List[Mapping[str, object]], now_ts: 
         if cid in has_success:
             continue
         status = str(e.get("status") or "done")
-        # Only override queued states; running is handled by stale-running checks.
         if status != "queued":
             continue
         task_name = str(e.get("task") or "")
@@ -508,7 +486,6 @@ def mark_attempted_without_success(entries: List[Mapping[str, object]], now_ts: 
         )
     return out
 
-
 def _log_last_update_ts(task_name: str) -> Optional[float]:
     candidates = [
         THINKING_LOGS_DIR / task_name / "codex_output.raw.log",
@@ -523,25 +500,6 @@ def _log_last_update_ts(task_name: str) -> Optional[float]:
                 return path.stat().st_mtime
         except OSError:
             continue
-    return None
-
-
-def load_overrides() -> dict[str, Mapping[str, object]]:
-    if not OVERRIDES_PATH.exists():
-        return {}
-    try:
-        data = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def get_override(overrides: Mapping[str, Mapping[str, object]], task_name: str, challenge_id: int) -> Optional[Mapping[str, object]]:
-    keys = [str(challenge_id), task_name]
-    for key in keys:
-        entry = overrides.get(key)
-        if isinstance(entry, Mapping):
-            return entry
     return None
 
 
@@ -564,7 +522,6 @@ def find_task_dir_by_id(challenge_id: int) -> Optional[Path]:
             return entry
     return None
 
-
 def build_view_model(
     entries: List[Mapping[str, object]],
     task_id: Optional[int] = None,
@@ -572,7 +529,6 @@ def build_view_model(
     now = datetime.now().timestamp()
     entries = mark_stale_running(entries, now)
     entries = mark_attempted_without_success(entries, now)
-    overrides = load_overrides()
     filtered = entries if task_id is None else [e for e in entries if e.get("challenge_id") == task_id]
     total_tokens = sum(int(e.get("tokens_used") or 0) for e in filtered)
     flags_found = [e for e in filtered if e.get("flag")]
@@ -638,17 +594,11 @@ def build_view_model(
             left_5h = _percent_left(tokens_5h, TOKEN_LIMIT_5H)
             left_week = _percent_left(tokens_week, TOKEN_LIMIT_WEEK)
 
-            budget_lines = [
-                f"Context window:   {context_left}% left ({_format_tokens(context_used)} used / {_format_tokens(CONTEXT_WINDOW_TOKENS)})",
-                f"5h limit:         {_bar(tokens_5h, TOKEN_LIMIT_5H)} {left_5h}% left (resets {reset_5h})",
-                f"Weekly limit:     {_bar(tokens_week, TOKEN_LIMIT_WEEK)} {left_week}% left (resets {reset_week})",
-            ]
             budgets = {
                 "tokens_5h": tokens_5h,
                 "limit_5h": TOKEN_LIMIT_5H,
                 "tokens_week": tokens_week,
                 "limit_week": TOKEN_LIMIT_WEEK,
-                "lines": budget_lines,
             }
     latest_status = "done"
     if task_id is None:
@@ -680,19 +630,13 @@ def build_view_model(
             status = str(e.get("status") or "done")
             ts = float(e.get("timestamp") or 0)
             task_name = str(e.get("task") or "")
-            override_entry = get_override(overrides, task_name, cid)
-            override_status = ""
-            if override_entry:
-                override_status = str(override_entry.get("category") or override_entry.get("status") or "").lower()
-                if override_status:
-                    status = override_status
             item: dict[str, object] = {
                 "task": task_name,
                 "challenge_id": cid,
                 "status": status,
                 "timestamp": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
                 "detail_href": f"/task/{cid}",
-                "error": str(e.get("error") or override_entry.get("note") if override_entry else "") if not override_status else str(override_entry.get("note") or "").strip(),
+                "error": str(e.get("error")) 
             }
             if status == "hidden":
                 continue
@@ -842,10 +786,7 @@ def build_view_model(
 def index() -> Response:
     entries = load_entries()
     context = build_view_model(entries)
-    if STATS_TEMPLATE and STATS_TEMPLATE.exists():
-        html = render_template_string(STATS_TEMPLATE.read_text(encoding="utf-8"), **context)
-    else:
-        html = render_template("stats.html", **context)
+    html = render_template("stats.html", **context)
     return Response(html, mimetype="text/html")
 
 
@@ -853,10 +794,7 @@ def index() -> Response:
 def task_detail(task_id: int) -> Response:
     entries = load_entries()
     context = build_view_model(entries, task_id=task_id)
-    if STATS_TEMPLATE and STATS_TEMPLATE.exists():
-        html = render_template_string(STATS_TEMPLATE.read_text(encoding="utf-8"), **context)
-    else:
-        html = render_template("stats.html", **context)
+    html = render_template("detail.html", **context)
     return Response(html, mimetype="text/html")
 
 
@@ -880,7 +818,6 @@ def task_thinking_api(task_id: int) -> Response:
             "html": format_thinking_html(thinking_text),
         }
     )
-
 
 def _thinking_payload(task_id: int) -> dict[str, object]:
     entries = load_entries()

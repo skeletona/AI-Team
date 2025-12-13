@@ -1,102 +1,158 @@
 <!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code&family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-  <script>
-    function toggle(id) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.style.display = el.style.display === 'block' ? 'none' : 'block';
-    }
-    function setTopbarHeightVar() {
-      const bar = document.querySelector(".topbar");
-      if (!bar) return;
-      const h = bar.getBoundingClientRect().height;
-      document.documentElement.style.setProperty("--topbar-h", `${h}px`);
-    }
-    function startThinkingPoll() {
-      const taskId = "{{ task_id if task_id is not none else '' }}";
-      if (!taskId) return;
-      const body = document.getElementById("thinking-body");
-      if (!body) return;
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "Codex Task Stats" }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="orb orb-one"></div>
+    <div class="orb orb-two"></div>
+    <div class="orb orb-three"></div>
+    <main class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AI-Team · Automated CTF Coverage</p>
+          <h1>{{ title or "Codex Task Stats" }}</h1>
+          <p class="hero-subtitle">
+            Autonomous fleet overview for every Codex-run challenge.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <span class="status-pill status-{{ latest_status | lower }}">
+            Latest status: {{ latest_status | capitalize }}
+          </span>
+        </div>
+      </header>
 
-      const startWs = () => {
-        const proto = (location.protocol === "https:") ? "wss" : "ws";
-        const url = `${proto}://${location.host}/ws/task/${taskId}/thinking`;
-        const ws = new WebSocket(url);
-        ws.onmessage = (ev) => {
-          try {
-            const data = JSON.parse(ev.data);
-            if (data && typeof data.html === "string") {
-              const nearBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 20;
-              body.innerHTML = data.html;
-              if (nearBottom) body.scrollTop = body.scrollHeight;
-            }
-          } catch (_) {}
-        };
-      };
-      startWs();
-    }
-    window.addEventListener("resize", () => setTopbarHeightVar());
-    window.addEventListener("load", () => setTopbarHeightVar());
-    document.addEventListener("DOMContentLoaded", () => {
-      setTopbarHeightVar();
-      startThinkingPoll();
-    });
-  </script>
-</head>
-<body {% if task_id is not none %}class="task-page"{% endif %}>
-  <div class="topbar">
-    <div class="topbar-head">
-        <h1><a href="/">AI Team Stats</a></h1>
-    </div>
-    <div class="summary">
-      <div class="pill">
-        <div class="label">{{ summary.runs_label }}</div>
-        <div class="value">{{ summary.runs }}</div>
-      </div>
-      <div class="pill">
-        <div class="label">Flags Extracted</div>
-        <div class="value">{{ summary.flags }}</div>
-      </div>
-      <div class="pill">
-        <div class="label">Tokens Used</div>
-        <div class="value">{{ summary.tokens }}</div>
-      </div>
-    </div>
-  </div>
+      <section class="summary-and-budget">
+        <div class="summary-grid">
+          <article class="summary-card">
+            <p class="label">{{ summary.runs_label or "Runs" }}</p>
+            <p class="value">{{ summary.runs | default(0) }}</p>
+            <p class="hint">logged attempts</p>
+          </article>
+          <article class="summary-card">
+            <p class="label">Flags</p>
+            <p class="value">{{ summary.flags | default(0) }}</p>
+            <p class="hint">unique captures</p>
+          </article>
+          <article class="summary-card">
+            <p class="label">Tokens</p>
+            <p class="value">{{ summary.tokens | default(0) }}</p>
+            <p class="hint">spent so far</p>
+          </article>
+        </div>
 
-  <main>
-    {% if task_id is none %}
-      <div class="lists">
-        <!-- The lists for queue, running, solved, failed can be styled here if needed -->
-      </div>
-    {% else %}
-      <div class="cards">
-        <div class="card">
-          <div class="card-body">
-            <div class="details open">
-              <div id="thinking-terminal" class="terminal">
-                <div class="terminal-title">
-                  <div class="terminal-dots">
-                    <span class="r"></span><span class="y"></span><span class="g"></span>
-                  </div>
-                  Thinking Process
+        <article class="budget-card">
+          <header>
+            <h2>Budget Watch</h2>
+            <p class="hint">API limits + context window</p>
+          </header>
+          {% if budgets.lines %}
+            <div class="budget-lines">
+              {% for line in budgets.lines %}
+                <p>{{ line }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+          <div class="budget-bars">
+            {% if budgets.limit_5h %}
+              {% set tokens_5h = budgets.tokens_5h | default(0) %}
+              {% set limit_5h = budgets.limit_5h %}
+              {% set fill_5h = [((tokens_5h / limit_5h) * 100), 100] | min %}
+              <div class="budget-row">
+                <div class="budget-row-label">
+                  <span>5h limit</span>
+                  <span>{{ tokens_5h | round }} / {{ limit_5h }}</span>
                 </div>
-                <div id="thinking-body" class="terminal-body">
-                  <div class="term-muted">Loading thinking process...</div>
+                <div class="budget-track">
+                  <div class="budget-fill" style="width: {{ fill_5h }}%"></div>
                 </div>
               </div>
-            </div>
+            {% endif %}
+            {% if budgets.limit_week %}
+              {% set tokens_week = budgets.tokens_week | default(0) %}
+              {% set limit_week = budgets.limit_week %}
+              {% set fill_week = [((tokens_week / limit_week) * 100), 100] | min %}
+              <div class="budget-row">
+                <div class="budget-row-label">
+                  <span>Weekly limit</span>
+                  <span>{{ tokens_week | round }} / {{ limit_week }}</span>
+                </div>
+                <div class="budget-track">
+                  <div class="budget-fill" style="width: {{ fill_week }}%"></div>
+                </div>
+              </div>
+            {% endif %}
           </div>
-        </div>
-      </div>
-    {% endif %}
-  </main>
-</body>
+        </article>
+      </section>
+
+      {% set queue_preview = queue[:6] %}
+      {% set running_preview = running[:6] %}
+      {% set solved_preview = solved[:6] %}
+      {% set failed_preview = failed[:6] %}
+
+      <section class="status-grid">
+        {% macro status_section(title, items, hint_text, extra_class="") %}
+          <article class="status-panel {{ extra_class }}">
+            <header>
+              <div>
+                <h3>{{ title }}</h3>
+                <p class="hint">{{ hint_text }}</p>
+              </div>
+              <span class="status-count">{{ items | length }}</span>
+            </header>
+            <div class="status-items">
+              {% for item in items %}
+                <div class="status-item" data-status="{{ item.status | lower }}">
+                  <div class="status-top-row">
+                    <div>
+                      <p class="task-name">{{ item.task or "Mysterious Task" }}</p>
+                      {% if item.challenge_id is not none and item.challenge_id != "" %}
+                        <p class="task-hash">#{{ item.challenge_id }}</p>
+                      {% endif %}
+                    </div>
+                    {% if item.detail_href %}
+                      <a class="tiny-link" href="{{ item.detail_href }}">open</a>
+                    {% endif %}
+                  </div>
+                  <div class="status-meta">
+                    <span class="badge badge-{{ item.status | lower }}">{{ item.status | capitalize }}</span>
+                    {% if item.timestamp %}
+                      <span>{{ item.timestamp }}</span>
+                    {% endif %}
+                  </div>
+                  {% if item.error %}
+                    <p class="status-error">{{ item.error }}</p>
+                  {% endif %}
+                </div>
+              {% else %}
+                <p class="status-empty">No {{ title | lower }} yet.</p>
+              {% endfor %}
+            </div>
+          </article>
+        {% endmacro %}
+
+        {{ status_section("Queued", queue_preview, "waiting for execution", "panel-queue") }}
+        {{ status_section("Running", running_preview, "currently burning tokens", "panel-running") }}
+        {{ status_section("Solved", solved_preview, "victories", "panel-solved") }}
+        {{ status_section("Failed", failed_preview, "needs attention", "panel-failed") }}
+      </section>
+
+      {% if empty_text %}
+        <section class="empty-notice">
+          <p>{{ empty_text }}</p>
+        </section>
+      {% endif %}
+    </main>
+  </body>
 </html>

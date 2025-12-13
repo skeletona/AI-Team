@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "Codex Task Log" }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="orb orb-one"></div>
+    <div class="orb orb-two"></div>
+    <div class="orb orb-three"></div>
+    <main class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AI-Team · Detailed Thinking</p>
+          <h1>Challenge #{{ task_id }}</h1>
+          <p class="hero-subtitle">
+            {{ task_name or "Running codex log" }}
+          </p>
+        </div>
+        <div class="hero-meta">
+          <span class="status-pill status-{{ latest_status | lower }}">
+            {{ latest_status | capitalize }}
+          </span>
+          <a class="hero-link hero-back" href="/">← Back to dashboard</a>
+        </div>
+      </header>
+
+      <section class="detail-view detail-terminal-shell">
+        {% if cards %}
+          <div class="cards-wrapper detail-cards">
+            {% for card in cards %}
+              <article class="thinking-card detail-thinking-card">
+                <header class="thinking-card-header">
+                  <div>
+                    <p class="task-name">{{ card.task or "Codex run" }}</p>
+                    <p class="task-hash">
+                      {% if card.flag %}
+                        <span class="flag-pill">flag ✓</span>
+                      {% endif %}
+                    </p>
+                  </div>
+                  <div class="thinking-meta">
+                    <span
+                      class="badge thinking-status"
+                      data-thinking-status
+                      data-status="{{ card.status | lower }}"
+                    >
+                      {{ card.status | capitalize }}
+                    </span>
+                    <span class="hint">{{ card.timestamp }}</span>
+                    {% if card.tokens %}
+                      <span class="hint">{{ card.tokens }} tokens</span>
+                    {% endif %}
+                  </div>
+                </header>
+                <div
+                  class="thinking-content detail-thinking-content"
+                  {% if loop.first %}data-thinking-target{% endif %}
+                >
+                  {{ card.thinking_html | safe }}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% elif empty_text %}
+          <section class="empty-notice detail-empty">
+            <p>{{ empty_text }}</p>
+          </section>
+        {% endif %}
+      </section>
+    </main>
+
+    {% if task_id %}
+      <script>
+        (function () {
+          const taskId = {{ task_id }};
+          const target = document.querySelector("[data-thinking-target]");
+          const statusBadge = document.querySelector("[data-thinking-status]");
+          if (!taskId || !target) {
+            return;
+          }
+          async function refreshThinking() {
+            try {
+              const resp = await fetch(`/api/task/${taskId}/thinking`);
+              if (!resp.ok) {
+                return;
+              }
+              const data = await resp.json();
+              if (data.html) {
+                target.innerHTML = data.html;
+              }
+              if (statusBadge && data.status) {
+                statusBadge.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+                statusBadge.dataset.status = data.status.toLowerCase();
+              }
+            } catch (err) {
+              console.error(err);
+            }
+          }
+          refreshThinking();
+          const poll = setInterval(refreshThinking, 7000);
+          window.addEventListener("beforeunload", () => clearInterval(poll));
+        })();
+      </script>
+    {% endif %}
+  </body>
+</html>
