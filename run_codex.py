@@ -6,27 +6,23 @@ same CTFd instance that `autonomous_ctfd.py` targets.
 The runner loads credentials from `.env` (via `dotenv`) and follows `FLAG_FORMAT` for
 matching. Flags are always sought in Codex's combined output, but submissions only
 happen in normal mode; `--dry-run` or `--no-submit` let you validate the workflow
-without contacting the remote server. Use `--timeout` to override the 10 minute
-per-task Codex timeout.
+without contacting the remote server.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
-import pty
 import random
 import re
-import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import threading
-import signal
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urljoin
@@ -39,7 +35,38 @@ import stats_db
 
 load_dotenv()
 
-CODEX_TIMEOUT = os.environ.get("CODEX_TIMEOUT", 10)
+
+def _parse_integer_env(value: Optional[str], default: int, name: str) -> int:
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logging.warning("%s=%r is not an integer; falling back to %s", name, value, default)
+        return default
+
+
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    if hasattr(os, "killpg"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pass
+        else:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+            return
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+CODEX_TIMEOUT = _parse_integer_env(os.environ.get("CODEX_TIMEOUT"), 0, "CODEX_TIMEOUT") * 60
 CTFD_URL = os.environ.get("CTFD_URL").rstrip("/")
 TEAM_NAME = os.environ.get("AI_TEAM_NAME")
 TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL")
@@ -53,11 +80,12 @@ MAX_CODEX_WORKERS = os.environ.get("MAX_CODEX_WORKERS")
 STATS_LOCK = threading.Lock()
 RUNNING_LOCK = threading.Lock()
 RUNNING_TASKS: dict[int, Path] = {}
+RUNNING_PROCS: dict[int, subprocess.Popen] = {}
+RUNNING_PROCS_LOCK = threading.Lock()
 SOLVED_LOCK = threading.Lock()
 _SOLVED_CACHE: dict[str, object] = {"ts": 0.0, "ids": set()}
 SOLVED_CACHE_SECONDS = int(os.environ.get("SOLVED_CACHE_SECONDS", "30"))
 OVERRIDES_PATH = Path(os.environ.get("OVERRIDES_PATH", "task_overrides.json"))
-STOP_FLAGS_DIR = Path(os.environ.get("STOP_FLAGS_DIR", "thinking_logs"))
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -91,22 +119,7 @@ def extract_tokens_used(output: str) -> Optional[int]:
         return None
 
 
-def extract_thinking(output: str, limit: int = 500) -> str:
-    clean = strip_ansi(output)
-    lower = clean.lower()
-    idx = lower.find("thinking")
-    if idx == -1:
-        return clean[:limit]
-    snippet = clean[idx:].splitlines()
-    if snippet:
-        snippet = snippet[1:]  # drop the 'thinking' label line
-    joined = "\n".join(snippet).strip()
-    if not joined:
-        return clean[:limit]
-    return joined[:limit]
-
-
-def extract_thinking_full(output: str) -> str:
+def extract_thinking(output: str) -> str:
     clean = strip_ansi(output)
     lower = clean.lower()
     idx = lower.find("thinking")
@@ -122,8 +135,7 @@ def persist_task_logs(task_dir: Path, output: str) -> None:
     try:
         logs_root = THINKING_LOGS_DIR / task_dir.name
         logs_root.mkdir(parents=True, exist_ok=True)
-        (logs_root / "codex_output.log").write_text(strip_ansi(output), encoding="utf-8")
-        (logs_root / "thinking.log").write_text(extract_thinking_full(output), encoding="utf-8")
+        (logs_root / "thinking.log").write_text(extract_thinking(output), encoding="utf-8")
     except OSError as exc:
         logging.warning("failed to write logs under %s: %s", task_dir, exc)
 
@@ -351,153 +363,76 @@ def prepare_codex_environment(home_override: Optional[Path] = None) -> Mapping[s
     return env
 
 
-def _collect_pty_output(
-    proc: subprocess.Popen,
-    master_fd: int,
-    timeout: int,
-    on_chunk=None,
-    stop_flag: Optional[Path] = None,
-) -> tuple[bytearray, bool, bool]:
-    output = bytearray()
-    deadline = time() + timeout * 60
-    timed_out = False
-    stop_requested = False
-    while True:
-        now = time()
-        poll = proc.poll()
-        if poll is None:
-            remaining = deadline - now
-            if remaining <= 0:
-                proc.kill()
-                timed_out = True
-                remaining = 0.1
-        else:
-            remaining = 0.1
-        if stop_flag and stop_flag.exists() and poll is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            stop_requested = True
-        try:
-            ready, _, _ = select.select([master_fd], [], [], max(0.0, remaining))
-        except InterruptedError:
-            continue
-        if ready:
-            try:
-                chunk = os.read(master_fd, 4096)
-            except OSError:
-                break
-            if chunk:
-                output.extend(chunk)
-                if on_chunk is not None:
-                    try:
-                        on_chunk(chunk)
-                    except Exception:
-                        pass
-                continue
-            if poll is not None:
-                break
-        if poll is not None and not ready:
-            break
-        if timed_out and poll is None:
-            continue
-    proc.wait()
-    return output, timed_out, stop_requested
-
-
-def run_codex_with_pty(
+def start_codex_to_file(
     command: list[str],
     task_dir: Path,
-    timeout: int,
-    master_fd: int,
-    slave_fd: int,
     env: Mapping[str, str],
+    output_log: Path,
+) -> subprocess.Popen:
+    output_log.parent.mkdir(parents=True, exist_ok=True)
+    fh = output_log.open("ab", buffering=0)
+
+    proc = subprocess.Popen(
+        command,
+        cwd=task_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+
+    proc._log_fh = fh  # чтобы закрыть потом
+    return proc
+
+
+def run_codex_with_logs(
+    command: list[str],
+    task_dir: Path,
+    env: Mapping[str, str],
+    challenge_id: Optional[int] = None,
 ) -> str:
+    """
+    Запускает Codex, пишет stdout/stderr в thinking.log и выводит информацию
+    о токенах только после естественного завершения.
+    """
     logs_root = THINKING_LOGS_DIR / task_dir.name
-    output_log_path = logs_root / "codex_output.raw.log"
-    stripped_log_path = logs_root / "codex_output.log"
-    thinking_log_path = logs_root / "thinking.log"
-    stop_flag_path = STOP_FLAGS_DIR / task_dir.name / "stop.flag"
-    try:
+    logs_root.mkdir(parents=True, exist_ok=True)
+
+    output_log = logs_root / "thinking.log"
+    completed_normally = False
+
+    timeout = None if CODEX_TIMEOUT <= 0 else CODEX_TIMEOUT
+    with output_log.open("wb") as fh:
         proc = subprocess.Popen(
             command,
             cwd=task_dir,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            text=False,
-            bufsize=0,
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
             env=env,
         )
-    except OSError as exc:
-        os.close(master_fd)
-        os.close(slave_fd)
-        logging.error("failed to start codex: %s", exc)
-        raise
-    else:
-        os.close(slave_fd)
-    try:
-        logs_root.mkdir(parents=True, exist_ok=True)
-        stop_flag_path.parent.mkdir(parents=True, exist_ok=True)
+        if challenge_id is not None:
+            with RUNNING_PROCS_LOCK:
+                RUNNING_PROCS[challenge_id] = proc
         try:
-            stop_flag_path.unlink()
-        except FileNotFoundError:
-            pass
-        line_buffer = ""
-        thinking_started = False
-        max_thinking_line = int(os.environ.get("MAX_THINKING_LINE_CHARS", "2000"))
-        max_thinking_nonprintable = float(os.environ.get("MAX_THINKING_NONPRINTABLE_RATIO", "0.2"))
-        with (
-            output_log_path.open("wb") as raw_fh,
-            stripped_log_path.open("w", encoding="utf-8") as stripped_fh,
-            thinking_log_path.open("w", encoding="utf-8") as thinking_fh,
-        ):
+            proc.wait(timeout=timeout)
+            completed_normally = True
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(proc)
+            proc.wait()
+        except KeyboardInterrupt:
+            _terminate_process_tree(proc)
+            proc.wait()
+            raise
+        finally:
+            if challenge_id is not None:
+                with RUNNING_PROCS_LOCK:
+                    RUNNING_PROCS.pop(challenge_id, None)
 
-            def tee(chunk: bytes) -> None:
-                nonlocal line_buffer, thinking_started
-                raw_fh.write(chunk)
-                raw_fh.flush()
-                sys.stdout.buffer.write(chunk)
-                sys.stdout.buffer.flush()
-
-                text = chunk.decode("utf-8", errors="ignore")
-                clean = strip_ansi(text)
-                if clean:
-                    stripped_fh.write(clean)
-                    stripped_fh.flush()
-
-                    line_buffer += clean
-                    lines = line_buffer.split("\n")
-                    line_buffer = lines.pop()  # keep last partial line
-                    for line in lines:
-                        if not thinking_started and line.strip().lower() == "thinking":
-                            thinking_started = True
-                            continue
-                        if thinking_started:
-                            nonprintable = sum(1 for ch in line if (ord(ch) < 9 or (13 < ord(ch) < 32)))
-                            ratio = (nonprintable / max(1, len(line)))
-                            if len(line) > max_thinking_line or ratio > max_thinking_nonprintable:
-                                thinking_fh.write(
-                                    f"[omitted noisy line: {len(line)} chars, nonprintable {ratio:.0%}]\n"
-                                )
-                            else:
-                                thinking_fh.write(line + "\n")
-                    if thinking_started:
-                        thinking_fh.flush()
-
-            output_bytes, timed_out, stop_requested = _collect_pty_output(
-                proc, master_fd, timeout, on_chunk=tee, stop_flag=stop_flag_path
-            )
-    finally:
-        os.close(master_fd)
-    output = output_bytes.decode("utf-8", errors="ignore")
-    if timed_out:
-        logging.warning("codex timed out for %s", task_dir)
-    elif proc.returncode != 0:
-        logging.warning("codex exited with code %s for %s", proc.returncode, task_dir.name)
-    if stop_flag_path.exists():
-        stop_flag_path.unlink()
+    output = output_log.read_text(encoding="utf-8", errors="ignore")
+    if completed_normally:
+        tokens = extract_tokens_used(output)
+        if tokens is not None:
+            print(f"tokens used: {tokens}", flush=True)
     return output
 
 
@@ -505,25 +440,22 @@ def run_codex(
     task_dir: Path,
     prompt: str,
     env: Mapping[str, str],
-    timeout: int = CODEX_TIMEOUT,
+    challenge_id: Optional[int] = None,
 ) -> str:
     command = get_codex_command(prompt)
     if not command:
         raise ValueError("CODEX_COMMAND must not be empty")
+
+    # Находим реальный исполняемый бинарник
     executable = shutil.which(command[0])
     if not executable:
-        logging.error("codex binary %s not found on PATH", command[0])
+        logging.error("Codex binary %s not found on PATH", command[0])
         raise FileNotFoundError(command[0])
     command[0] = executable
-    display_command = [
-        "<prompt>" if part == prompt else part for part in command
-    ]
-    logging.info(
-        "running codex for %s",
-        task_dir.name,
-    )
-    master_fd, slave_fd = pty.openpty()
-    return run_codex_with_pty(command, task_dir, timeout, master_fd, slave_fd, env)
+
+    logging.info("running codex for %s", task_dir.name)
+
+    return run_codex_with_logs(command, task_dir, env, challenge_id=challenge_id)
 
 
 def local_attachment_names(task_dir: Path) -> list[str]:
@@ -598,49 +530,21 @@ def append_stats(
             logging.warning("failed to write stats to %s: %s", DB_PATH, exc)
 
 
-def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Codex on each downloaded CTF task")
-    parser.add_argument(
-        "--tasks-root",
-        type=Path,
-        default=None,
-        help="directory containing downloaded tasks (falls back to TASKS_ROOT env)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="skip all CTFd requests and only run Codex locally",
-    )
-    parser.add_argument(
-        "--no-submit",
-        action="store_true",
-        help="run Codex but do not submit any flags (requires login for metadata)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=600.0,
-        help="seconds to wait for each Codex invocation",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=max(1, os.cpu_count() or 4),
-        help="number of Codex tasks to run in parallel",
-    )
-    return parser.parse_args(argv)
+def mark_all_running_failed(reason: str = "interrupted") -> None:
+    entries = stats_db.read_entries(DB_PATH)
+    for entry in entries:
+        if entry.get("status") != "running":
+            continue
+        cid = entry.get("challenge_id")
+        task_name = entry.get("task")
+        if not isinstance(cid, int) or not task_name:
+            continue
+        task_dir = TASKS_ROOT / task_name
+        append_stats(task_dir, cid, None, "", status="failed", error=reason)
 
 
-def run_tasks(
-    tasks_root: Path,
-    dry_run: bool,
-    no_submit: bool,
-    timeout: int,
-    workers: int,
-) -> int:
+def run_tasks(tasks_root: Path) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    if dry_run:
-        logging.info("running in dry-run mode; no network requests will be made")
     try:
         stats_db.delete_status(DB_PATH, "running")
     except Exception:
@@ -650,20 +554,28 @@ def run_tasks(
     if not tasks_root.exists():
         logging.error("task directory %s does not exist", tasks_root)
         return 1
-    flag_regex = build_flag_regex() if not FLAG_REGEX else FLAG_REGEX
+    if FLAG_REGEX:
+        try:
+            flag_regex = re.compile(FLAG_REGEX)
+        except re.error as exc:
+            raise ValueError(f"FLAG_REGEX {FLAG_REGEX!r} is not a valid regex") from exc
+    else:
+        flag_regex = build_flag_regex()
     task_dirs = sorted(p for p in tasks_root.iterdir() if p.is_dir())
     if not task_dirs:
         logging.warning("no tasks found under %s", tasks_root)
         return 0
-    skip_submission = no_submit or dry_run
     codex_env = prepare_codex_environment()
     errors = 0
+    max_workers: Optional[int] = None
     if MAX_CODEX_WORKERS:
         try:
-            cap = max(1, int(MAX_CODEX_WORKERS))
-            if workers > cap:
+            cap = int(MAX_CODEX_WORKERS)
+            if cap > 0:
+                max_workers = cap
                 logging.info("MAX_CODEX_WORKERS: %s", cap)
-            workers = min(workers, cap)
+            else:
+                logging.warning("ignoring invalid MAX_CODEX_WORKERS=%s", MAX_CODEX_WORKERS)
         except ValueError:
             logging.warning("ignoring invalid MAX_CODEX_WORKERS=%r", MAX_CODEX_WORKERS)
 
@@ -682,13 +594,12 @@ def run_tasks(
             completed_ids.add(cid)
 
     # Also skip tasks already solved on CTFd (useful after restarts or stats resets).
-    if not dry_run and TEAM_EMAIL and TEAM_PASSWORD:
-        solved_session = create_session()
-        if solved_session is not None:
-            solved_ids = fetch_solved_challenge_ids(solved_session)
-            if solved_ids:
-                logging.info("CTFd reports %d solved challenge(s); will skip them", len(solved_ids))
-                completed_ids.update(solved_ids)
+    solved_session = create_session()
+    if solved_session is not None:
+        solved_ids = fetch_solved_challenge_ids(solved_session)
+        if solved_ids:
+            logging.info("CTFd reports %d solved challenge(s)", len(solved_ids))
+            completed_ids.update(solved_ids)
 
     task_dirs_to_run: list[Path] = []
     # Seed queued entries for tasks we will run, and skip those already completed.
@@ -737,12 +648,11 @@ def run_tasks(
             return 0
 
         session: Optional[requests.Session] = None
-        if not dry_run and not skip_submission:
-            session = create_session()
-            if session is None:
-                logging.warning(
-                    "could not authenticate with %s; running without submissions", CTFD_URL
-                )
+        session = create_session()
+        if session is None:
+            logging.warning(
+                "could not authenticate with %s; running without submissions", CTFD_URL
+            )
         if session is not None:
             try:
                 if int(challenge_id) in solved_ids_cached(session):
@@ -753,7 +663,7 @@ def run_tasks(
                 pass
 
         detail: Mapping[str, Any] = {}
-        if session and not dry_run:
+        if session:
             try:
                 detail = fetch_challenge_detail(session, challenge_id)
             except requests.RequestException as exc:
@@ -791,7 +701,12 @@ def run_tasks(
                     RUNNING_TASKS[challenge_id] = task_dir
             append_stats(task_dir, challenge_id, None, "", status="running")
             try:
-                output = run_codex(task_dir, prompt=prompt, env=codex_env, timeout=timeout)
+                output = run_codex(
+                    task_dir,
+                    prompt=prompt,
+                    env=codex_env,
+                    challenge_id=int(challenge_id) if isinstance(challenge_id, int) else None,
+                )
             except FileNotFoundError:
                 return 1
             last_output = output
@@ -810,7 +725,7 @@ def run_tasks(
                 )
                 continue
 
-            if skip_submission or session is None:
+            if session is None:
                 logging.info("skipping submission/validation for %s (dry-run/no-submit)", task_dir.name)
                 return 0
 
@@ -844,7 +759,7 @@ def run_tasks(
         return 0
 
     try:
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_task, td): td for td in task_dirs_to_run}
             for future in as_completed(futures):
                 try:
@@ -868,6 +783,11 @@ def run_tasks(
             running_now = list(RUNNING_TASKS.items())
         for cid, td in running_now:
             append_stats(td, cid, None, "", status="failed", error="interrupted")
+        with RUNNING_PROCS_LOCK:
+            running_procs = list(RUNNING_PROCS.items())
+        for _, proc in running_procs:
+            _terminate_process_tree(proc)
+        mark_all_running_failed("interrupted")
         logging.warning("interrupted; marked %d running task(s) as failed", len(running_now))
         exit(0)
     finally:
@@ -879,15 +799,7 @@ def run_tasks(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_arguments(argv)
-    tasks_root = args.tasks_root or TASKS_ROOT
-    return run_tasks(
-        tasks_root=tasks_root,
-        dry_run=args.dry_run,
-        no_submit=args.no_submit,
-        timeout=args.timeout,
-        workers=args.workers,
-    )
+    return run_tasks(tasks_root=TASKS_ROOT)
 
 
 if __name__ == "__main__":
