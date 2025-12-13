@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{TITLE}}</title>
+  <style>
+    :root {
+      --bg: #0b1224;
+      --panel: #111a30;
+      --accent: #60a5fa;
+      --muted: #94a3b8;
+      --border: #1f2937;
+      --shadow: 0 10px 40px rgba(0,0,0,0.45);
+    }
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; margin: 0; background: radial-gradient(circle at 10% 20%, #0f172a, #060a17 60%), var(--bg); color: #e2e8f0; }
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 3rem; }
+    h1 { color: #c4d4ff; letter-spacing: 0.02em; }
+    a { color: #93c5fd; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1rem 0 1.5rem; }
+    .pill { background: linear-gradient(135deg, #1f2937, #0f172a); border: 1px solid var(--border); border-radius: 0.9rem; padding: 0.9rem 1rem; box-shadow: var(--shadow); }
+    .pill .label { color: var(--muted); font-size: 0.9rem; }
+    .pill .value { font-size: 1.5rem; color: #f8fafc; margin-top: 0.15rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+    .card { background: linear-gradient(145deg, #121c33, #0f1627); border: 1px solid var(--border); border-radius: 1rem; box-shadow: var(--shadow); padding: 0.75rem 0.9rem; transition: transform 120ms ease, border-color 120ms ease; cursor: pointer; }
+    .card:hover { transform: translateY(-2px); border-color: #243b5a; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+    .task { font-weight: 700; color: #e5edff; }
+    .meta { color: var(--muted); font-size: 0.9rem; }
+    .task-link { color: #93c5fd; font-size: 0.85rem; }
+    .badge { background: rgba(96,165,250,0.12); color: #bfdbfe; padding: 0.35rem 0.7rem; border-radius: 999px; font-weight: 600; border: 1px solid rgba(96,165,250,0.3); }
+    .flag-line { margin-top: 0.35rem; color: #fbbf24; font-family: 'Roboto Mono', monospace; word-break: break-all; }
+    .card-body { margin-top: 0.4rem; }
+    .details { display: none; margin-top: 0.6rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
+    .detail-row { margin-bottom: 0.4rem; }
+    .label { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    pre { white-space: pre-wrap; margin: 0.2rem 0 0; font-size: 0.93rem; color: #dbeafe; }
+  </style>
+  <script>
+    function toggle(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.style.display = el.style.display === 'block' ? 'none' : 'block';
+    }
+  </script>
+</head>
+<body>
+  <main>
+    {{HEADER}}
+    {{SUMMARY}}
+    <div class="cards">
+      {{CARDS}}
+    </div>
+  </main>
+</body>
+</html>

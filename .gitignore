@@ -1,0 +1,8 @@
+codex_stats.jsonl
+thinking_logs
+.cache
+__pycache__
+.codex
+tasks
+.venv
+.env

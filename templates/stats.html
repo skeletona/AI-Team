@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <title>{{ title }}</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code&family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
   <script>
     function toggle(id) {
       const el = document.getElementById(id);
@@ -18,24 +21,14 @@
     }
     function startThinkingPoll() {
       const taskId = "{{ task_id if task_id is not none else '' }}";
-      const status = "{{ latest_status }}";
       if (!taskId) return;
       const body = document.getElementById("thinking-body");
-      const button = document.getElementById("thinking-load");
-      const terminal = document.getElementById("thinking-terminal");
-      const sendBtn = document.getElementById("send-message");
-      const messageBox = document.getElementById("user-message");
-      const messageStatus = document.getElementById("message-status");
-      if (!body || !button) return;
-
-      let loaded = false;
-      let timer = null;
-      let ws = null;
+      if (!body) return;
 
       const startWs = () => {
         const proto = (location.protocol === "https:") ? "wss" : "ws";
         const url = `${proto}://${location.host}/ws/task/${taskId}/thinking`;
-        ws = new WebSocket(url);
+        const ws = new WebSocket(url);
         ws.onmessage = (ev) => {
           try {
             const data = JSON.parse(ev.data);
@@ -46,142 +39,34 @@
             }
           } catch (_) {}
         };
-        ws.onclose = () => { ws = null; };
       };
-
-      const ensureLoaded = async () => {
-        if (loaded) return;
-        loaded = true;
-        button.style.display = "none";
-        body.innerHTML = "<div class='term-muted'>Loading…</div>";
-        startWs();
-      };
-
-      // Autoscroll attachment: keep pinned to bottom only when user is at bottom.
-      let pinned = true;
-      const btn = document.getElementById("thinking-bottom");
-      const updatePin = () => {
-        const atBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 20;
-        pinned = atBottom;
-        if (btn) btn.style.display = atBottom ? "none" : "inline-flex";
-      };
-      body.addEventListener("scroll", updatePin, { passive: true });
-      updatePin();
-
-      if (btn) {
-        btn.addEventListener("click", () => {
-          body.scrollTop = body.scrollHeight;
-          pinned = true;
-          updatePin();
-        });
-      }
-
-      const fullscreenBtn = document.getElementById("thinking-fullscreen");
-      if (fullscreenBtn && terminal) {
-        const exit = () => {
-          terminal.classList.remove("fullscreen");
-          document.body.style.overflow = "";
-        };
-        fullscreenBtn.addEventListener("click", () => {
-          const on = terminal.classList.toggle("fullscreen");
-          document.body.style.overflow = on ? "hidden" : "";
-          if (on) body.scrollTop = body.scrollHeight;
-        });
-        document.addEventListener("keydown", (e) => {
-          if (e.key === "Escape") exit();
-        });
-      }
-
-      button.addEventListener("click", ensureLoaded);
-
-      if ("IntersectionObserver" in window) {
-        const obs = new IntersectionObserver((entries) => {
-          for (const e of entries) {
-            if (e.isIntersecting) {
-              obs.disconnect();
-              ensureLoaded();
-              break;
-            }
-          }
-        }, { rootMargin: "200px" });
-        obs.observe(body);
-      }
-
-      if (sendBtn && messageBox) {
-        sendBtn.addEventListener("click", async () => {
-          const msg = messageBox.value.trim();
-          if (!msg) {
-            messageStatus.textContent = "Message is empty.";
-            return;
-          }
-          sendBtn.disabled = true;
-          messageStatus.textContent = "Sending...";
-          try {
-            const resp = await fetch(`/api/task/${taskId}/message`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ message: msg }),
-            });
-            if (!resp.ok) {
-              const txt = await resp.text();
-              messageStatus.textContent = `Error: ${txt || resp.status}`;
-            } else {
-              messageStatus.textContent = "Sent. The current run will stop, notes will be added.";
-              messageBox.value = "";
-            }
-          } catch (err) {
-            messageStatus.textContent = `Error: ${err}`;
-          } finally {
-            sendBtn.disabled = false;
-          }
-        });
-      }
+      startWs();
     }
     window.addEventListener("resize", () => setTopbarHeightVar());
     window.addEventListener("load", () => setTopbarHeightVar());
-    document.addEventListener("DOMContentLoaded", () => setTopbarHeightVar());
+    document.addEventListener("DOMContentLoaded", () => {
+      setTopbarHeightVar();
+      startThinkingPoll();
+    });
   </script>
 </head>
-<body onload="startThinkingPoll()" {% if task_id is not none %}class="task-page"{% endif %}>
+<body {% if task_id is not none %}class="task-page"{% endif %}>
   <div class="topbar">
-    <div class="topbar-inner">
-      <div class="topbar-head">
-        <h1>
-          {% if task_id is not none %}
-            {{ task_name or "Task Details" }}
-          {% else %}
-            Codex Task Stats
-          {% endif %}
-        </h1>
-        {% if task_id is not none %}
-          <div class="topbar-sub">ID: {{ task_id }}</div>
-          {% if cards and cards[0].flag %}
-            <div class="topbar-sub">Flag: <code>{{ cards[0].flag }}</code></div>
-          {% endif %}
-        {% endif %}
+    <div class="topbar-head">
+        <h1><a href="/">AI Team Stats</a></h1>
+    </div>
+    <div class="summary">
+      <div class="pill">
+        <div class="label">{{ summary.runs_label }}</div>
+        <div class="value">{{ summary.runs }}</div>
       </div>
-
-      <div class="summary">
-        <div class="pill">
-          <div class="label">{{ summary.runs_label }}</div>
-          <div class="value">{{ summary.runs }}</div>
-        </div>
-        <div class="pill">
-          <div class="label">Flags extracted</div>
-          <div class="value">{{ summary.flags }}</div>
-        </div>
-        <div class="pill">
-          <div class="label">Tokens used</div>
-          <div class="value">{{ summary.tokens }}</div>
-        </div>
-        {% if task_id is none and budgets.lines %}
-          <div class="pill" style="grid-column: 1 / -1;">
-            <div class="label">Budgets</div>
-            <div class="topbar-sub" style="margin-top:0.25rem; white-space:pre; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
-              {{ budgets.lines|join('\n') }}
-            </div>
-          </div>
-        {% endif %}
+      <div class="pill">
+        <div class="label">Flags Extracted</div>
+        <div class="value">{{ summary.flags }}</div>
+      </div>
+      <div class="pill">
+        <div class="label">Tokens Used</div>
+        <div class="value">{{ summary.tokens }}</div>
       </div>
     </div>
   </div>
@@ -189,133 +74,28 @@
   <main>
     {% if task_id is none %}
       <div class="lists">
-        <div class="list">
-          <h2>Queue</h2>
-          {% if queue %}
-            {% for item in queue %}
-              <div class="list-item">
-                <div class="list-left">
-                  <div class="list-title"><a href="{{ item.detail_href }}">{{ item.task }}</a></div>
-                  <div class="list-sub">ID {{ item.challenge_id }}</div>
-                </div>
-                <div class="chip queued">queued</div>
-              </div>
-            {% endfor %}
-          {% else %}
-            <div class="list-sub">Empty</div>
-          {% endif %}
-        </div>
-        <div class="list">
-          <h2>Running</h2>
-          {% if running %}
-            {% for item in running %}
-              <div class="list-item">
-                <div class="list-left">
-                  <div class="list-title"><a href="{{ item.detail_href }}">{{ item.task }}</a></div>
-                  <div class="list-sub">ID {{ item.challenge_id }} • {{ item.timestamp }}</div>
-                </div>
-                <div class="chip running">running</div>
-              </div>
-            {% endfor %}
-          {% else %}
-            <div class="list-sub">None</div>
-          {% endif %}
-        </div>
-        <div class="list">
-          <h2>Solved</h2>
-          {% if solved %}
-            {% for item in solved %}
-              <div class="list-item">
-                <div class="list-left">
-                  <div class="list-title"><a href="{{ item.detail_href }}">{{ item.task }}</a></div>
-                  <div class="list-sub">ID {{ item.challenge_id }}{% if item.timestamp %} • {{ item.timestamp }}{% endif %}{% if task_id is not none and item.error %} • {{ item.error }}{% endif %}</div>
-                </div>
-                <div class="chip solved">solved</div>
-              </div>
-            {% endfor %}
-          {% else %}
-            <div class="list-sub">None</div>
-          {% endif %}
-        </div>
-        <div class="list">
-          <h2>Failed</h2>
-          {% if failed %}
-            {% for item in failed %}
-              <div class="list-item">
-                <div class="list-left">
-                  <div class="list-title"><a href="{{ item.detail_href }}">{{ item.task }}</a></div>
-                  <div class="list-sub">ID {{ item.challenge_id }} • {{ item.status }}{% if item.error %} • {{ item.error }}{% endif %}</div>
-                </div>
-                <div class="chip stopped">{{ item.status }}</div>
-              </div>
-            {% endfor %}
-          {% else %}
-            <div class="list-sub">None</div>
-          {% endif %}
-        </div>
+        <!-- The lists for queue, running, solved, failed can be styled here if needed -->
       </div>
-    {% endif %}
-    {% if task_id is not none %}
-    <div class="cards">
-      {% if cards %}
-        {% for card in cards %}
-          {% if task_id is none %}
-            <a href="{{ card.detail_href }}" style="text-decoration:none; color:inherit;">
-          {% endif %}
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <div class="task">
-                  {% if task_id is none %}
-                    {{ card.task }}
-                  {% else %}
-                    {{ card.task }}
-                  {% endif %}
-                </div>
-                <div class="meta">ID {{ card.challenge_id }} • {{ card.timestamp }}</div>
-              </div>
-              {% if card.status == "running" %}
-                <div class="badge">running</div>
-              {% else %}
-                <div class="badge">{{ (card.tokens or "&nbsp;")|safe }} tokens</div>
-              {% endif %}
-            </div>
-            <div class="card-body">
-              {% if task_id is not none %}
-
-                <div class="details open">
-	                  <div id="thinking-terminal" class="terminal">
-                    <div class="terminal-title" style="justify-content: space-between;">
-                      <div>
-                        <span class="terminal-dots"><span class="r"></span><span class="y"></span><span class="g"></span></span>
-                        Thinking
-                      </div>
-                      <div style="display:flex; gap:0.5rem;">
-                        <button id="thinking-load" class="chip queued" style="cursor:pointer;">Load logs</button>
-                        <button id="thinking-bottom" class="chip running" style="cursor:pointer; display:none;">Bottom</button>
-                      </div>
-                    </div>
-                    <div id="thinking-body" class="terminal-body"><div class="term-muted">Not loaded.</div></div>
-                    <div style="margin-top:0.6rem;">
-                      <textarea id="user-message" placeholder="Send note to Codex..." style="width:100%; height:70px; background:#0f172a; color:#e2e8f0; border:1px solid var(--border); border-radius:0.6rem; padding:0.6rem; resize:vertical;"></textarea>
-                      <div style="display:flex; justify-content:flex-end; margin-top:0.4rem;">
-                        <button id="send-message" class="chip running" style="cursor:pointer;">Send note & stop current run</button>
-                      </div>
-                      <div id="message-status" class="term-muted" style="margin-top:0.3rem;"></div>
-                    </div>
+    {% else %}
+      <div class="cards">
+        <div class="card">
+          <div class="card-body">
+            <div class="details open">
+              <div id="thinking-terminal" class="terminal">
+                <div class="terminal-title">
+                  <div class="terminal-dots">
+                    <span class="r"></span><span class="y"></span><span class="g"></span>
                   </div>
+                  Thinking Process
                 </div>
-              {% endif %}
+                <div id="thinking-body" class="terminal-body">
+                  <div class="term-muted">Loading thinking process...</div>
+                </div>
+              </div>
             </div>
           </div>
-          {% if task_id is none %}
-            </a>
-          {% endif %}
-        {% endfor %}
-      {% else %}
-        <div class="pill">{{ empty_text }}</div>
-      {% endif %}
-    </div>
+        </div>
+      </div>
     {% endif %}
   </main>
 </body>
