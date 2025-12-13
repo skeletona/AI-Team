@@ -2,7 +2,7 @@
 """
 Simple stats dashboard for Codex task runs.
 
-Reads JSONL entries from STATS_PATH (default: codex_stats.jsonl) and serves a
+Reads entries from STATS_PATH (default: codex_stats.db) and serves a
 small HTML page showing recent runs, Codex thinking snippets, attempted flags,
 and token usage totals, using Flask.
 """
@@ -27,7 +27,9 @@ from flask_sock import Sock
 import requests
 from dotenv import load_dotenv
 
-STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.jsonl"))
+import stats_db
+
+STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
 STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
 STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
 PORT = int(os.environ.get("STATS_PORT", "8000"))
@@ -389,23 +391,10 @@ def extract_thinking_from_stream(text: str) -> str:
     return "\n".join(snippet).rstrip()
 
 def load_entries() -> List[Mapping[str, object]]:
-    entries: List[Mapping[str, object]] = []
-    if not STATS_PATH.exists():
-        return entries
     try:
-        with STATS_PATH.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # Skip malformed lines instead of failing the server.
-                    continue
-    except OSError:
-        return entries
-    return entries
+        return stats_db.read_entries(STATS_PATH)
+    except Exception:
+        return []
 
 def mark_stale_running(entries: List[Mapping[str, object]], now_ts: float) -> List[Mapping[str, object]]:
     latest_by_id: dict[int, Mapping[str, object]] = {}
@@ -665,7 +654,7 @@ def build_view_model(
                 else:
                     failed.append({**item, "status": "done", "error": item.get("error") or "no flag"})
 
-        # If CTFd reports solved challenges that never appeared in codex_stats.jsonl,
+        # If CTFd reports solved challenges that never appeared in the stats database,
         # still surface them in the Solved list.
         known_ids = set(latest_by_id.keys())
         detail_session: Optional[requests.Session] = None

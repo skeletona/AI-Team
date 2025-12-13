@@ -31,9 +31,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from time import time
 import requests
 from dotenv import load_dotenv
+
+import stats_db
 
 load_dotenv()
 
@@ -43,7 +45,7 @@ TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL", os.environ.get("EMAIL"))
 TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD", os.environ.get("TEAM_PASSWORD"))
 TASKS_ROOT = Path(os.environ.get("TASKS_ROOT", "tasks"))
 FLAG_FORMAT = os.environ.get("FLAG_FORMAT", r"[A-Za-z0-9_]+\{[^}]+\}")
-STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.jsonl"))
+DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 THINKING_LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
 MAX_CODEX_WORKERS = os.environ.get("MAX_CODEX_WORKERS")
 STATS_LOCK = threading.Lock()
@@ -253,7 +255,7 @@ def fetch_solved_challenge_ids(session: requests.Session) -> set[int]:
 
 
 def solved_ids_cached(session: requests.Session) -> set[int]:
-    now = time.time()
+    now = time()
     with SOLVED_LOCK:
         cached_ts = float(_SOLVED_CACHE.get("ts") or 0.0)
         cached_ids = _SOLVED_CACHE.get("ids")
@@ -379,11 +381,11 @@ def _collect_pty_output(
     stop_flag: Optional[Path] = None,
 ) -> tuple[bytearray, bool, bool]:
     output = bytearray()
-    deadline = time.time() + timeout
+    deadline = time() + timeout
     timed_out = False
     stop_requested = False
     while True:
-        now = time.time()
+        now = time()
         poll = proc.poll()
         if poll is None:
             remaining = deadline - now
@@ -601,66 +603,22 @@ def append_stats(
     output: str,
     status: str = "done",
     error: Optional[str] = None,
-    attempt: Optional[int] = None,
 ) -> None:
     entry = {
         "task": task_dir.name,
         "challenge_id": challenge_id,
         "flag": flag,
         "tokens_used": extract_tokens_used(output),
-        "thinking": extract_thinking_full(output),
         "status": status,
         "error": error,
-        "attempt": attempt,
-        "timestamp": time.time(),
+        "timestamp": time(),
     }
-    try:
-        STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with STATS_LOCK:
-            with STATS_PATH.open("a", encoding="utf-8") as fh:
-                json.dump(entry, fh)
-                fh.write("\n")
-    except OSError as exc:
-        logging.warning("failed to write stats to %s: %s", STATS_PATH, exc)
-
-
-def dedupe_stats() -> None:
-    """Rewrite stats so there is only one entry per task (challenge_id or task name), keeping the newest."""
-    if not STATS_PATH.exists():
-        return
-    try:
-        lines = [ln.strip() for ln in STATS_PATH.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except OSError:
-        return
-    latest: dict[str, dict[str, object]] = {}
-    for line in lines:
+    with STATS_LOCK:
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        key = None
-        cid = entry.get("challenge_id")
-        if isinstance(cid, int):
-            key = f"cid:{cid}"
-        elif entry.get("task"):
-            key = f"task:{entry.get('task')}"
-        else:
-            continue
-        ts = float(entry.get("timestamp") or 0.0)
-        prev = latest.get(key)
-        if not prev or float(prev.get("timestamp") or 0.0) <= ts:
-            latest[key] = entry
-    if not latest:
-        return
-    deduped = sorted(latest.values(), key=lambda e: float(e.get("timestamp") or 0.0))
-    try:
-        with STATS_LOCK:
-            with STATS_PATH.open("w", encoding="utf-8") as fh:
-                for entry in deduped:
-                    json.dump(entry, fh)
-                    fh.write("\n")
-    except OSError as exc:
-        logging.warning("failed to rewrite deduped stats: %s", exc)
+            stats_db.insert_entry(STATS_PATH, entry)
+        except Exception as exc:
+            logging.warning("failed to write stats to %s: %s", STATS_PATH, exc)
+
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Codex on each downloaded CTF task")
@@ -705,7 +663,11 @@ def run_tasks(
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if dry_run:
         logging.info("running in dry-run mode; no network requests will be made")
-    dedupe_stats()
+    try:
+        stats_db.delete_status(STATS_PATH, "running")
+    except Exception:
+        logging.debug("could not clear previous running entries")
+    stats_db.dedupe_stats(STATS_PATH)
     # Keep previous stats; the dashboard and runner use this file as an append-only log.
     if not tasks_root.exists():
         logging.error("task directory %s does not exist", tasks_root)
@@ -729,29 +691,17 @@ def run_tasks(
 
     completed_ids: set[int] = set()
     latest_stats: dict[int, dict[str, object]] = {}
-    if STATS_PATH.exists():
-        try:
-            with STATS_PATH.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    cid = entry.get("challenge_id")
-                    status = str(entry.get("status") or "")
-                    if not isinstance(cid, int):
-                        continue
-                    prev = latest_stats.get(cid)
-                    ts = float(entry.get("timestamp") or 0.0)
-                    if not prev or float(prev.get("timestamp") or 0.0) <= ts:
-                        latest_stats[cid] = entry
-                    if status == "done" and entry.get("flag"):
-                        completed_ids.add(cid)
-        except OSError as exc:
-            logging.warning("could not read existing stats %s: %s", STATS_PATH, exc)
+    for entry in stats_db.read_entries(STATS_PATH):
+        cid = entry.get("challenge_id")
+        status = str(entry.get("status") or "")
+        if not isinstance(cid, int):
+            continue
+        prev = latest_stats.get(cid)
+        ts = float(entry.get("timestamp") or 0.0)
+        if not prev or float(prev.get("timestamp") or 0.0) <= ts:
+            latest_stats[cid] = entry
+        if status == "done" and entry.get("flag"):
+            completed_ids.add(cid)
 
     # Also skip tasks already solved on CTFd (useful after restarts or stats resets).
     if not dry_run and TEAM_EMAIL and TEAM_PASSWORD:
@@ -778,7 +728,7 @@ def run_tasks(
         if not isinstance(challenge_id, int):
             continue
         if challenge_id in completed_ids:
-            logging.info("skipping %s (%s): already in codex_stats.jsonl", task_dir.name, challenge_id)
+            logging.info("skipping %s (%s): already recorded in %s", task_dir.name, challenge_id, STATS_PATH.name)
             continue
         override_status = get_override_status(overrides, task_dir, challenge_id)
         if override_status in {"hidden", "solved"}:
@@ -879,7 +829,7 @@ def run_tasks(
             with RUNNING_LOCK:
                 if isinstance(challenge_id, int):
                     RUNNING_TASKS[challenge_id] = task_dir
-            append_stats(task_dir, challenge_id, None, "", status="running", attempt=attempt)
+            append_stats(task_dir, challenge_id, None, "", status="running")
             try:
                 output = run_codex(task_dir, prompt=prompt, env=codex_env, timeout=timeout)
             except FileNotFoundError:
@@ -889,7 +839,7 @@ def run_tasks(
 
             candidates = [m.group(0) for m in flag_regex.finditer(output)]
             flag = candidates[-1] if candidates else None
-            append_stats(task_dir, challenge_id, flag, output, status="done", attempt=attempt)
+            append_stats(task_dir, challenge_id, flag, output, status="done")
             with RUNNING_LOCK:
                 RUNNING_TASKS.pop(int(challenge_id), None)
 
@@ -960,6 +910,11 @@ def run_tasks(
             append_stats(td, cid, None, "", status="failed", error="interrupted")
         logging.warning("interrupted; marked %d running task(s) as failed", len(running_now))
         return 1
+    finally:
+        try:
+            stats_db.delete_status(STATS_PATH, "running")
+        except Exception as exc:
+            logging.warning("failed to clean running entries: %s", exc)
     return 1 if errors else 0
 
 

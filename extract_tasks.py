@@ -11,12 +11,14 @@ import string
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Set
 from urllib.parse import urljoin
-
+from time import time
+from stats_db import insert_entry
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
+DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 CTFD_URL = os.environ.get("CTFD_URL", "https://play.nitectf25.live").rstrip("/")
 TEAM_NAME = os.environ.get("AI_TEAM_NAME", os.environ.get("AI_TEAM_NAME", "AI-Team"))
 TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL", os.environ.get("TEAM_EMAIL"))
@@ -24,6 +26,7 @@ TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD", os.environ.get("TEAM_PASSWORD
 DOWNLOAD_ROOT = Path(os.environ.get("DOWNLOAD_ROOT", "tasks"))
 MAX_ATTACHMENT_BYTES = int(os.environ.get("MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
 TARGET_POINTS = int(os.environ.get("TARGET_POINTS", "50"))
+STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -47,11 +50,6 @@ def summarize_description(description: str, limit: int = 120) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 3].rstrip() + "..."
-
-
-def generate_password(length: int = 16) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def fetch_csrf_token(session: requests.Session, path: str) -> str:
@@ -86,7 +84,7 @@ def is_logged_in(session: requests.Session) -> bool:
     return bool(data.get("data"))
 
 
-def login(session: requests.Session, email: str, password: str) -> bool:
+def login(session: requests.Session, email: str) -> bool:
     try:
         token = fetch_csrf_token(session, "/login")
     except Exception as exc:
@@ -95,7 +93,7 @@ def login(session: requests.Session, email: str, password: str) -> bool:
     payload = {
         "name": TEAM_NAME,
         "email": email,
-        "password": password,
+        "password": TEAM_PASSWORD,
         "nonce": token,
     }
     resp = session.post(urljoin(CTFD_URL, "/login"), data=payload, headers=DEFAULT_HEADERS)
@@ -105,7 +103,7 @@ def login(session: requests.Session, email: str, password: str) -> bool:
             "turnstile/firewall blocked login; open %s/login, solve it with %s/%s, and rerun",
             CTFD_URL,
             email,
-            password,
+            TEAM_PASSWORD,
         )
         return False
     if "invalid username or password" in body or resp.status_code >= 400:
@@ -114,7 +112,7 @@ def login(session: requests.Session, email: str, password: str) -> bool:
     return is_logged_in(session)
 
 
-def register(session: requests.Session, email: str, password: str) -> bool:
+def register(session: requests.Session, email: str) -> bool:
     try:
         token = fetch_csrf_token(session, "/register")
     except Exception as exc:
@@ -123,7 +121,7 @@ def register(session: requests.Session, email: str, password: str) -> bool:
     payload = {
         "name": TEAM_NAME,
         "email": email,
-        "password": password,
+        "password": TEAM_PASSWORD,
         "nonce": token,
         "cf-turnstile-response": "",
     }
@@ -134,7 +132,7 @@ def register(session: requests.Session, email: str, password: str) -> bool:
             "turnstile blocked registration; open %s/register, solve it with %s/%s, and rerun",
             CTFD_URL,
             email,
-            password,
+            TEAM_PASSWORD,
         )
         return False
     if resp.status_code >= 400:
@@ -246,6 +244,7 @@ def fetch_solved_challenge_ids(session: requests.Session) -> Set[int]:
             solved.add(cid_int)
         if solved:
             break
+
     return solved
 
 
@@ -266,7 +265,21 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
         challenge_id = int(challenge.get("id") or 0)
         if challenge_id in solved_ids:
             safe = sanitize_component(challenge.get("name"), str(challenge_id))
-            print(f"[skipped   ] {safe:<28} pts={TARGET_POINTS:<3} solved", flush=True)
+            print(f"[  skipped  ] {safe:<28} pts={TARGET_POINTS:<3} solved", flush=True)
+
+            insert_entry(
+                DB_PATH,
+                {
+                "timestamp": time(),
+                "task": safe,
+                "challenge_id": challenge_id,
+                "flag": "",
+                "tokens_used": 0,
+                "status": "done",
+                "error": None,
+                },
+)
+
             continue
         detail = fetch_challenge_detail(session, challenge_id)
         if detail:
@@ -277,7 +290,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
         existing_metadata_path = folder / "metadata.json"
         if existing_metadata_path.exists():
             # Never delete "touched" folders: they may contain useful Codex context.
-            print(f"[skipped   ] {safe_name:<28} pts={TARGET_POINTS:<3} already-downloaded", flush=True)
+            print(f"[  skipped  ] {safe_name:<28} pts={TARGET_POINTS:<3} already downloaded", flush=True)
             continue
 
         files = challenge.get("files") or []
@@ -327,10 +340,10 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
                 logging.warning("failed to download %s: %s", att_name, exc)
         points = int(challenge.get("value") or 0)
         attachments_count = len(challenge.get("files") or [])
-        print(f"[{'downloaded':<10}] {safe_name:<28} pts={points:<3} files={attachments_count}", flush=True)
+        print(f"[{'  download ':<10}] {safe_name:<28} pts={points:<3} files={attachments_count}", flush=True)
 
 
-def create_team_record(session: requests.Session, password: str) -> bool:
+def create_team_record(session: requests.Session) -> bool:
     try:
         csrf = fetch_csrf_token(session, "/")
     except RuntimeError as exc:
@@ -338,7 +351,7 @@ def create_team_record(session: requests.Session, password: str) -> bool:
         csrf = ""
     payload = {
         "name": TEAM_NAME,
-        "password": password,
+        "password": TEAM_PASSWORD,
         "email": TEAM_EMAIL,
         "affiliation": os.environ.get("TEAM_AFFILIATION", ""),
         "website": os.environ.get("TEAM_WEBSITE", ""),
@@ -362,7 +375,7 @@ def create_team_record(session: requests.Session, password: str) -> bool:
     return False
 
 
-def ensure_team_membership(session: requests.Session, password: str) -> None:
+def ensure_team_membership(session: requests.Session) -> None:
     resp = session.get(
         urljoin(CTFD_URL, "/api/v1/teams/me"),
         headers={"Accept": "application/json", **DEFAULT_HEADERS},
@@ -370,30 +383,27 @@ def ensure_team_membership(session: requests.Session, password: str) -> None:
     if resp.status_code == 200:
         return
     logging.info("team membership missing (%s); trying to create a record", resp.status_code)
-    create_team_record(session, password)
+    create_team_record(session, TEAM_PASSWORD)
 
 
 def main() -> int:
     verbose = os.environ.get("VERBOSE", "").strip().lower() in {"1", "true", "yes", "y"}
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, format="%(levelname)s: %(message)s")
-    if not TEAM_EMAIL:
-        logging.error("EMAIL/AI_TEAM_EMAIL must be set via .env or the environment")
+    if not TEAM_EMAIL or not TEAM_PASSWORD:
+        logging.error("TEAM_EMAIL/TEAM_PASSWORD must be set via .env or the environment")
         return 1
-    password = TEAM_PASSWORD or generate_password()
-    if not TEAM_PASSWORD:
-        print(f"Generated password for {TEAM_NAME}: {password}")
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
 
-    if not login(session, TEAM_EMAIL, password):
+    if not login(session, TEAM_EMAIL):
         logging.info("login failed; attempting to register %s", TEAM_NAME)
-        if not register(session, TEAM_EMAIL, password):
+        if not register(session, TEAM_EMAIL):
             return 1
-        if not login(session, TEAM_EMAIL, password):
+        if not login(session, TEAM_EMAIL):
             logging.error("could not log in after registering")
             return 1
 
-    ensure_team_membership(session, password)
+    ensure_team_membership(session)
     solved_ids = fetch_solved_challenge_ids(session)
     if solved_ids:
         logging.debug("found %d solved challenge(s); will skip them", len(solved_ids))
@@ -403,7 +413,7 @@ def main() -> int:
     except requests.HTTPError as exc:
         if exc.response.status_code == 403:
             logging.info("challenge API blocked (HTTP 403); retrying after ensuring team membership")
-            ensure_team_membership(session, password)
+            ensure_team_membership(session)
             solved_ids = fetch_solved_challenge_ids(session)
             download_challenges(session, solved_ids)
         else:

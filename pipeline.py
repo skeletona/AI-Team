@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--clean-stats",
         action="store_true",
-        help="delete codex_stats.jsonl before starting",
+        help="delete the stats database (honors STATS_PATH)",
     )
     parser.add_argument("--skip-download", action="store_true", help="skip extract_tasks.py")
     parser.add_argument("--skip-serve", action="store_true", help="skip serve_stats.py")
@@ -87,8 +87,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.clean_thinking:
             shutil.rmtree(root / "thinking_logs", ignore_errors=True)
         if args.clean_stats:
+            stats_path = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
             try:
-                (root / "codex_stats.jsonl").unlink()
+                stats_path.unlink()
             except FileNotFoundError:
                 pass
 

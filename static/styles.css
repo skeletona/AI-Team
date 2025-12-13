@@ -496,7 +496,6 @@ body {
   padding: 1rem;
   font-size: 0.9rem;
   line-height: 1.6;
-  min-height: 140px;
   overflow-y: auto;
   max-height: 280px;
 }
