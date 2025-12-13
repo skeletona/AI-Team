@@ -39,12 +39,14 @@ import stats_db
 
 load_dotenv()
 
-CTFD_URL = os.environ.get("CTFD_URL", "https://play.nitectf25.live").rstrip("/")
-TEAM_NAME = os.environ.get("TEAM_NAME", os.environ.get("AI_TEAM_NAME", "AI-Team"))
-TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL", os.environ.get("EMAIL"))
-TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD", os.environ.get("TEAM_PASSWORD"))
+CODEX_TIMEOUT = os.environ.get("CODEX_TIMEOUT", 10)
+CTFD_URL = os.environ.get("CTFD_URL").rstrip("/")
+TEAM_NAME = os.environ.get("AI_TEAM_NAME")
+TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL")
+TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD")
 TASKS_ROOT = Path(os.environ.get("TASKS_ROOT", "tasks"))
-FLAG_FORMAT = os.environ.get("FLAG_FORMAT", r"[A-Za-z0-9_]+\{[^}]+\}")
+FLAG_FORMAT = os.environ.get("FLAG_FORMAT")
+FLAG_REGEX = os.environ.get("FLAG_REGEX")
 DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 THINKING_LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
 MAX_CODEX_WORKERS = os.environ.get("MAX_CODEX_WORKERS")
@@ -125,6 +127,7 @@ def persist_task_logs(task_dir: Path, output: str) -> None:
     except OSError as exc:
         logging.warning("failed to write logs under %s: %s", task_dir, exc)
 
+
 def build_flag_regex() -> re.Pattern[str]:
     spec = FLAG_FORMAT
     regex_candidate = spec
@@ -133,8 +136,7 @@ def build_flag_regex() -> re.Pattern[str]:
         placeholder = re.escape("{}")
         regex_candidate = escaped_spec.replace(placeholder, r"\{[^}]+\}")
         logging.info(
-            "treating FLAG_FORMAT %s as template; derived regex %s",
-            spec,
+            "FLAG_REGEX: %s",
             regex_candidate,
         )
     try:
@@ -268,30 +270,6 @@ def solved_ids_cached(session: requests.Session) -> set[int]:
     return solved
 
 
-def load_overrides() -> dict[str, Mapping[str, object]]:
-    if not OVERRIDES_PATH.exists():
-        return {}
-    try:
-        data = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def get_override_status(overrides: Mapping[str, Mapping[str, object]], task_dir: Path, challenge_id: int) -> Optional[str]:
-    keys = [
-        str(challenge_id),
-        task_dir.name,
-    ]
-    for key in keys:
-        entry = overrides.get(key)
-        if isinstance(entry, Mapping):
-            status = entry.get("category") or entry.get("status")
-            if isinstance(status, str):
-                return status.lower()
-    return None
-
-
 def submit_flag(session: requests.Session, challenge_id: int, flag: str) -> bool:
     endpoint = urljoin(CTFD_URL, "/api/v1/challenges/attempt")
     payload = {"submission": flag, "challenge_id": challenge_id}
@@ -376,12 +354,12 @@ def prepare_codex_environment(home_override: Optional[Path] = None) -> Mapping[s
 def _collect_pty_output(
     proc: subprocess.Popen,
     master_fd: int,
-    timeout: float,
+    timeout: int,
     on_chunk=None,
     stop_flag: Optional[Path] = None,
 ) -> tuple[bytearray, bool, bool]:
     output = bytearray()
-    deadline = time() + timeout
+    deadline = time() + timeout * 60
     timed_out = False
     stop_requested = False
     while True:
@@ -431,7 +409,7 @@ def _collect_pty_output(
 def run_codex_with_pty(
     command: list[str],
     task_dir: Path,
-    timeout: float,
+    timeout: int,
     master_fd: int,
     slave_fd: int,
     env: Mapping[str, str],
@@ -527,7 +505,7 @@ def run_codex(
     task_dir: Path,
     prompt: str,
     env: Mapping[str, str],
-    timeout: float = 600.0,
+    timeout: int = CODEX_TIMEOUT,
 ) -> str:
     command = get_codex_command(prompt)
     if not command:
@@ -615,9 +593,9 @@ def append_stats(
     }
     with STATS_LOCK:
         try:
-            stats_db.insert_entry(STATS_PATH, entry)
+            stats_db.insert_entry(DB_PATH, entry)
         except Exception as exc:
-            logging.warning("failed to write stats to %s: %s", STATS_PATH, exc)
+            logging.warning("failed to write stats to %s: %s", DB_PATH, exc)
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -657,22 +635,22 @@ def run_tasks(
     tasks_root: Path,
     dry_run: bool,
     no_submit: bool,
-    timeout: float,
+    timeout: int,
     workers: int,
 ) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if dry_run:
         logging.info("running in dry-run mode; no network requests will be made")
     try:
-        stats_db.delete_status(STATS_PATH, "running")
+        stats_db.delete_status(DB_PATH, "running")
     except Exception:
         logging.debug("could not clear previous running entries")
-    stats_db.dedupe_stats(STATS_PATH)
+    stats_db.dedupe_stats(DB_PATH)
     # Keep previous stats; the dashboard and runner use this file as an append-only log.
     if not tasks_root.exists():
         logging.error("task directory %s does not exist", tasks_root)
         return 1
-    flag_regex = build_flag_regex()
+    flag_regex = build_flag_regex() if not FLAG_REGEX else FLAG_REGEX
     task_dirs = sorted(p for p in tasks_root.iterdir() if p.is_dir())
     if not task_dirs:
         logging.warning("no tasks found under %s", tasks_root)
@@ -684,14 +662,14 @@ def run_tasks(
         try:
             cap = max(1, int(MAX_CODEX_WORKERS))
             if workers > cap:
-                logging.info("capping workers from %s to %s via MAX_CODEX_WORKERS", workers, cap)
+                logging.info("MAX_CODEX_WORKERS: %s", cap)
             workers = min(workers, cap)
         except ValueError:
             logging.warning("ignoring invalid MAX_CODEX_WORKERS=%r", MAX_CODEX_WORKERS)
 
     completed_ids: set[int] = set()
     latest_stats: dict[int, dict[str, object]] = {}
-    for entry in stats_db.read_entries(STATS_PATH):
+    for entry in stats_db.read_entries(DB_PATH):
         cid = entry.get("challenge_id")
         status = str(entry.get("status") or "")
         if not isinstance(cid, int):
@@ -712,8 +690,6 @@ def run_tasks(
                 logging.info("CTFd reports %d solved challenge(s); will skip them", len(solved_ids))
                 completed_ids.update(solved_ids)
 
-    overrides = load_overrides()
-
     task_dirs_to_run: list[Path] = []
     # Seed queued entries for tasks we will run, and skip those already completed.
     for task_dir in task_dirs:
@@ -728,14 +704,10 @@ def run_tasks(
         if not isinstance(challenge_id, int):
             continue
         if challenge_id in completed_ids:
-            logging.info("skipping %s (%s): already recorded in %s", task_dir.name, challenge_id, STATS_PATH.name)
-            continue
-        override_status = get_override_status(overrides, task_dir, challenge_id)
-        if override_status in {"hidden", "solved"}:
-            logging.info("skipping %s (%s): override=%s", task_dir.name, challenge_id, override_status)
+            logging.info("skipping %s (%s): already recorded in %s", task_dir.name, challenge_id, DB_PATH.name)
             continue
         latest_entry = latest_stats.get(challenge_id)
-        # Allow reruns even for failed/stopped; only skip if explicitly solved/hidden/override or completed_ids.
+        # Allow reruns even for failed/stopped; only skip if explicitly solved/hidden/ or completed_ids.
         task_dirs_to_run.append(task_dir)
         append_stats(task_dir, challenge_id, None, "", status="queued")
 
@@ -776,18 +748,6 @@ def run_tasks(
                 if int(challenge_id) in solved_ids_cached(session):
                     append_stats(task_dir, int(challenge_id), None, "", status="solved", error="already solved by a human!")
                     logging.info("skipping %s (%s): already solved on CTFd", task_dir.name, challenge_id)
-                    return 0
-                override_status = get_override_status(overrides, task_dir, int(challenge_id))
-                if override_status in {"hidden", "solved"}:
-                    append_stats(
-                        task_dir,
-                        int(challenge_id),
-                        None,
-                        "",
-                        status="solved" if override_status == "solved" else "failed",
-                        error="manual override",
-                    )
-                    logging.info("skipping %s (%s): override=%s", task_dir.name, challenge_id, override_status)
                     return 0
             except Exception:
                 pass
@@ -909,10 +869,10 @@ def run_tasks(
         for cid, td in running_now:
             append_stats(td, cid, None, "", status="failed", error="interrupted")
         logging.warning("interrupted; marked %d running task(s) as failed", len(running_now))
-        return 1
+        exit(0)
     finally:
         try:
-            stats_db.delete_status(STATS_PATH, "running")
+            stats_db.delete_status(DB_PATH, "running")
         except Exception as exc:
             logging.warning("failed to clean running entries: %s", exc)
     return 1 if errors else 0
