@@ -511,17 +511,25 @@ def find_task_dir_by_id(challenge_id: int) -> Optional[Path]:
             return entry
     return None
 
+
 def build_view_model(
-    entries: List[Mapping[str, object]],
-    task_id: Optional[int] = None,
+    entries: list[Mapping[str, object]],
+    task_id: int | None = None,
 ) -> Mapping[str, object]:
     now = datetime.now().timestamp()
+
+    # --- Normalize / mark states ---
     entries = mark_stale_running(entries, now)
     entries = mark_attempted_without_success(entries, now)
-    filtered = entries if task_id is None else [e for e in entries if e.get("challenge_id") == task_id]
+
+    filtered = (
+        entries
+        if task_id is None
+        else [e for e in entries if e.get("challenge_id") == task_id]
+    )
+
     total_tokens = sum(int(e.get("tokens_used") or 0) for e in filtered)
     flags_found = [e for e in filtered if e.get("flag")]
-    cards: List[Mapping[str, object]] = []
 
     title = "Codex Task Stats" if task_id is None else f"Codex Task Stats – {task_id}"
     summary = {
@@ -530,84 +538,43 @@ def build_view_model(
         "flags": len(flags_found),
         "tokens": total_tokens,
     }
+
+    # --- Budgets (index page only, no network) ---
     budgets: Mapping[str, object] = {}
     if task_id is None:
-        now = datetime.now().timestamp()
-        codex_lines = _read_budgets_from_codex(now)
-        if codex_lines:
-            budgets = {"lines": codex_lines}
-        else:
-            window_5h = [
-                e
-                for e in entries
-                if (now - float(e.get("timestamp") or 0)) <= 5 * 60 * 60
-            ]
-            window_week = [
-                e
-                for e in entries
-                if (now - float(e.get("timestamp") or 0)) <= 7 * 24 * 60 * 60
-            ]
-            tokens_5h = sum(
-                int(e.get("tokens_used") or 0)
-                for e in window_5h
-            )
-            tokens_week = sum(
-                int(e.get("tokens_used") or 0)
-                for e in window_week
-            )
-            reset_5h_ts = None
-            if window_5h:
-                oldest = min(float(e.get("timestamp") or 0) for e in window_5h)
-                reset_5h_ts = oldest + 5 * 60 * 60
-            reset_week_ts = None
-            if window_week:
-                oldest = min(float(e.get("timestamp") or 0) for e in window_week)
-                reset_week_ts = oldest + 7 * 24 * 60 * 60
+        window_5h = [e for e in entries if now - float(e.get("timestamp") or 0) <= 5 * 3600]
+        window_week = [e for e in entries if now - float(e.get("timestamp") or 0) <= 7 * 86400]
 
-            context_used = None
-            if CONTEXT_WINDOW_USED_FALLBACK:
-                try:
-                    context_used = int(float(CONTEXT_WINDOW_USED_FALLBACK))
-                except ValueError:
-                    context_used = None
-            if context_used is None:
-                context_used = int((entries[-1].get("tokens_used") or 0) if entries else 0)
+        tokens_5h = sum(int(e.get("tokens_used") or 0) for e in window_5h)
+        tokens_week = sum(int(e.get("tokens_used") or 0) for e in window_week)
 
-            reset_5h = datetime.fromtimestamp(reset_5h_ts).strftime("%H:%M") if reset_5h_ts else "—"
-            if reset_week_ts:
-                reset_week = datetime.fromtimestamp(reset_week_ts).strftime("%H:%M on %d %b")
-            else:
-                reset_week = "—"
+        budgets = {
+            "tokens_5h": tokens_5h,
+            "limit_5h": TOKEN_LIMIT_5H,
+            "tokens_week": tokens_week,
+            "limit_week": TOKEN_LIMIT_WEEK,
+        }
 
-            context_left = _percent_left(context_used, CONTEXT_WINDOW_TOKENS)
-            left_5h = _percent_left(tokens_5h, TOKEN_LIMIT_5H)
-            left_week = _percent_left(tokens_week, TOKEN_LIMIT_WEEK)
-
-            budgets = {
-                "tokens_5h": tokens_5h,
-                "limit_5h": TOKEN_LIMIT_5H,
-                "tokens_week": tokens_week,
-                "limit_week": TOKEN_LIMIT_WEEK,
-            }
+    # --- Latest status ---
     latest_status = "done"
-    if task_id is None:
-        for e in reversed(entries):
-            if str(e.get("status") or "done") == "running":
-                latest_status = "running"
-                break
-    else:
-        for e in reversed(filtered):
-            latest_status = str(e.get("status") or "done")
+    source = entries if task_id is None else filtered
+    for e in reversed(source):
+        status = str(e.get("status") or "done")
+        if status == "running":
+            latest_status = "running"
             break
+        latest_status = status
+        break
 
-    queue: List[Mapping[str, object]] = []
-    running: List[Mapping[str, object]] = []
-    solved: List[Mapping[str, object]] = []
-    failed: List[Mapping[str, object]] = []
-    latest_by_id: dict[int, Mapping[str, object]] = {}
+    # --- Buckets for index page ---
+    queue: list[Mapping[str, object]] = []
+    running: list[Mapping[str, object]] = []
+    solved: list[Mapping[str, object]] = []
+    failed: list[Mapping[str, object]] = []
+
     if task_id is None:
-        remote_solved = fetch_solved_ids_cached(now)
-        challenges = fetch_challenges_cached(now)
+        # latest entry per challenge_id
+        latest_by_id: dict[int, Mapping[str, object]] = {}
         for e in entries:
             cid = e.get("challenge_id")
             if not isinstance(cid, int):
@@ -615,145 +582,109 @@ def build_view_model(
             prev = latest_by_id.get(cid)
             if not prev or float(e.get("timestamp") or 0) >= float(prev.get("timestamp") or 0):
                 latest_by_id[cid] = e
+
         for cid, e in sorted(latest_by_id.items(), key=lambda kv: str(kv[1].get("task") or "")):
             status = str(e.get("status") or "done")
             ts = float(e.get("timestamp") or 0)
-            task_name = str(e.get("task") or "")
+            has_flag = bool(e.get("flag"))
+
             item: dict[str, object] = {
-                "task": task_name,
+                "task": str(e.get("task") or ""),
                 "challenge_id": cid,
                 "status": status,
                 "timestamp": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
                 "detail_href": f"/task/{cid}",
-                "error": str(e.get("error")) 
+                "error": str(e.get("error") or ""),
             }
+
             if status == "hidden":
                 continue
-            if cid in remote_solved:
+
+            # --- SOLVED ---
+            if has_flag or status == "solved":
                 solved.append({**item, "status": "solved", "error": ""})
                 continue
-            if status == "solved":
-                solved.append(item)
-            elif status == "queued":
+
+            # --- QUEUED ---
+            if status == "queued":
                 queue.append(item)
-            elif status == "running":
-                last_update = _log_last_update_ts(task_name)
-                log_stale = bool(last_update is not None and (now - last_update) > RUNNING_LOG_STALE_SECONDS)
-                if log_stale or (now - ts > STALE_RUNNING_SECONDS):
-                    item["status"] = "stalled"
-                    if log_stale and not item.get("error"):
-                        item["error"] = "no recent log updates"
-                    failed.append(item)
+                continue
+
+            # --- RUNNING ---
+            if status == "running":
+                last_update = _log_last_update_ts(item["task"])
+                log_stale = (
+                    last_update is not None
+                    and (now - last_update) > RUNNING_LOG_STALE_SECONDS
+                )
+                if log_stale or (now - ts) > STALE_RUNNING_SECONDS:
+                    failed.append(
+                        {
+                            **item,
+                            "status": "stalled",
+                            "error": item["error"] or "no recent log updates",
+                        }
+                    )
                 else:
                     running.append(item)
-            elif status in {"failed", "stopped", "stalled"}:
-                failed.append(item)
-            elif status == "done":
-                if e.get("flag"):
-                    solved.append(item)
-                else:
-                    failed.append({**item, "status": "done", "error": item.get("error") or "no flag"})
+                continue
 
-        # If CTFd reports solved challenges that never appeared in the stats database,
-        # still surface them in the Solved list.
-        known_ids = set(latest_by_id.keys())
-        detail_session: Optional[requests.Session] = None
-        for cid in sorted(remote_solved - known_ids):
-            meta = challenges.get(cid, {})
-            task_name = str(meta.get("name") or "")
-            if not task_name:
-                if detail_session is None:
-                    detail_session = requests.Session()
-                    detail_session.headers.update(DEFAULT_HEADERS)
-                    login_ctfd(detail_session)
-                name = fetch_challenge_name(detail_session, cid)
-                if name:
-                    task_name = name
-            if not task_name:
-                task_name = f"challenge-{cid}"
-            solved.append(
+            # --- FAILED / DONE WITHOUT FLAG ---
+            failed.append(
                 {
-                    "task": task_name,
-                    "challenge_id": cid,
-                    "status": "solved",
-                    "timestamp": "",
-                    "detail_href": f"/task/{cid}",
-                    "error": "already solved by a human!",
+                    **item,
+                    "status": status,
+                    "error": item["error"] or "no flag",
                 }
             )
 
-    # Build cards only for task detail page; index skips heavy log loading.
-    if task_id is not None:
-        display_entries: List[Mapping[str, object]] = []
-        candidates = sorted(
+    # --- Cards (task detail page only) ---
+    cards: list[Mapping[str, object]] = []
+    if task_id is not None and filtered:
+        best = max(
             filtered,
             key=lambda e: float(e.get("timestamp") or 0),
-            reverse=True,
+            default=None,
         )
-        best: Optional[Mapping[str, object]] = None
-        for e in candidates:
-            status = str(e.get("status") or "done")
-            if status == "queued":
-                continue
-            task_name = str(e.get("task", "") or "")
-            if load_task_thinking(task_name):
-                best = e
-                break
-            if status == "running" and load_task_live_output(task_name):
-                best = e
-                break
-            if best is None:
-                best = e
-        if best:
-            display_entries = [best]
 
-        for idx, e in enumerate(display_entries):
-            ts = datetime.fromtimestamp(e.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
-            challenge_id = e.get("challenge_id", "")
-            task_name = str(e.get("task", "") or "")
-            status = str(e.get("status") or "done")
-            thinking_text = load_task_thinking(task_name) or str(e.get("thinking") or "")
+        if best:
+            task_name = str(best.get("task") or "")
+            status = str(best.get("status") or "done")
+
+            thinking_text = load_task_thinking(task_name) or str(best.get("thinking") or "")
             if status == "running" and not thinking_text.strip():
                 live = load_task_live_output(task_name)
                 if live:
                     thinking_text = extract_thinking_from_stream(live)
+
+            ts = datetime.fromtimestamp(best.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
+
             cards.append(
                 {
-                    "id": f"task-{idx}",
+                    "id": "task-0",
                     "task": task_name,
-                    "challenge_id": challenge_id,
+                    "challenge_id": best.get("challenge_id"),
                     "timestamp": ts,
-                    "flag": e.get("flag") or "",
-                    "tokens": e.get("tokens_used") or "",
+                    "flag": best.get("flag") or "",
+                    "tokens": best.get("tokens_used") or "",
                     "status": status,
                     "thinking": thinking_text,
                     "thinking_html": format_thinking_html(thinking_text),
-                    "detail_href": f"/task/{challenge_id}" if challenge_id != "" else "",
+                    "detail_href": f"/task/{best.get('challenge_id')}",
                 }
             )
+
+    # --- Empty text ---
     task_name = ""
     if task_id is not None and filtered:
         task_name = str(filtered[-1].get("task") or "")
-    if task_id is None:
-        empty_text = "No runs yet."
-    else:
-        empty_text = "No runs for this task yet."
-        challenges = fetch_challenges_cached(now)
-        solved_ids = fetch_solved_ids_cached(now)
-        if task_id in solved_ids:
-            meta = challenges.get(task_id, {})
-            name = meta.get("name") or task_name
-            if not name:
-                try:
-                    sess = requests.Session()
-                    sess.headers.update(DEFAULT_HEADERS)
-                    login_ctfd(sess)
-                    fetched = fetch_challenge_name(sess, task_id)
-                    if fetched:
-                        name = fetched
-                except Exception:
-                    name = None
-            empty_text = f"{name or f'challenge-{task_id}'} has already been solved by a human."
+
+    empty_text = (
+        "No runs yet."
+        if task_id is None
+        else "No runs for this task yet."
+    )
+
     return {
         "title": title,
         "task_id": task_id,
