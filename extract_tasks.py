@@ -6,26 +6,23 @@ import json
 import logging
 import os
 import re
-import secrets
-import string
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Set
+from typing import Any, Mapping, Optional, Set
 from urllib.parse import urljoin
 from time import time
 from stats_db import insert_entry
 import requests
 from dotenv import load_dotenv
 
+import ctfd
+
 load_dotenv()
 
 DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 CTFD_URL = os.environ.get("CTFD_URL", "https://play.nitectf25.live").rstrip("/")
-TEAM_NAME = os.environ.get("AI_TEAM_NAME", os.environ.get("AI_TEAM_NAME", "AI-Team"))
-TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL", os.environ.get("TEAM_EMAIL"))
-TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD", os.environ.get("TEAM_PASSWORD"))
 DOWNLOAD_ROOT = Path(os.environ.get("DOWNLOAD_ROOT", "tasks"))
 MAX_ATTACHMENT_BYTES = int(os.environ.get("MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
-TARGET_POINTS = int(os.environ.get("TARGET_POINTS", "50"))
+TARGET_POINTS = int(os.environ.get("TARGET_POINTS"))
 STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
 
 DEFAULT_HEADERS = {
@@ -50,96 +47,6 @@ def summarize_description(description: str, limit: int = 120) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 3].rstrip() + "..."
-
-
-def fetch_csrf_token(session: requests.Session, path: str) -> str:
-    url = urljoin(CTFD_URL, path)
-    resp = session.get(url, headers=DEFAULT_HEADERS)
-    resp.raise_for_status()
-    html = resp.text
-    patterns = [
-        r'name="nonce"[^>]*value="([^"]+)"',
-        r'name="csrf_token"[^>]*value="([^"]+)"',
-        r"'csrfNonce':\s*\"([0-9a-f]+)\"",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html)
-        if match:
-            return match.group(1)
-    raise RuntimeError(f"CSRF token not found on {url}")
-
-
-def is_logged_in(session: requests.Session) -> bool:
-    resp = session.get(
-        urljoin(CTFD_URL, "/api/v1/users/me"),
-        headers={"Accept": "application/json", **DEFAULT_HEADERS},
-        allow_redirects=False,
-    )
-    if resp.status_code != 200:
-        return False
-    try:
-        data = resp.json()
-    except ValueError:
-        return False
-    return bool(data.get("data"))
-
-
-def login(session: requests.Session, email: str) -> bool:
-    try:
-        token = fetch_csrf_token(session, "/login")
-    except Exception as exc:
-        logging.warning("could not retrieve login CSRF token: %s", exc)
-        return False
-    payload = {
-        "name": TEAM_NAME,
-        "email": email,
-        "password": TEAM_PASSWORD,
-        "nonce": token,
-    }
-    resp = session.post(urljoin(CTFD_URL, "/login"), data=payload, headers=DEFAULT_HEADERS)
-    body = resp.text.lower()
-    if resp.status_code == 403 or "cf-turnstile" in body:
-        logging.error(
-            "turnstile/firewall blocked login; open %s/login, solve it with %s/%s, and rerun",
-            CTFD_URL,
-            email,
-            TEAM_PASSWORD,
-        )
-        return False
-    if "invalid username or password" in body or resp.status_code >= 400:
-        logging.info("login response indicates invalid credentials (status %s)", resp.status_code)
-        return False
-    return is_logged_in(session)
-
-
-def register(session: requests.Session, email: str) -> bool:
-    try:
-        token = fetch_csrf_token(session, "/register")
-    except Exception as exc:
-        logging.warning("could not retrieve registration CSRF token: %s", exc)
-        return False
-    payload = {
-        "name": TEAM_NAME,
-        "email": email,
-        "password": TEAM_PASSWORD,
-        "nonce": token,
-        "cf-turnstile-response": "",
-    }
-    resp = session.post(urljoin(CTFD_URL, "/register"), data=payload, headers=DEFAULT_HEADERS)
-    body = resp.text.lower()
-    if resp.status_code == 403 or "cf-turnstile" in body:
-        logging.error(
-            "turnstile blocked registration; open %s/register, solve it with %s/%s, and rerun",
-            CTFD_URL,
-            email,
-            TEAM_PASSWORD,
-        )
-        return False
-    if resp.status_code >= 400:
-        logging.warning("registration returned HTTP %s", resp.status_code)
-        return False
-    logging.info("registration submitted; remember to confirm any emailed link if required")
-    return True
 
 
 def download_file(session: requests.Session, url: str, destination: Path) -> None:
@@ -194,58 +101,7 @@ def persist_challenge_metadata(challenge: Mapping[str, Any], destination: Path) 
         "files": files,
     }
     metadata_path = destination / "metadata.json"
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-
-
-
-def fetch_challenge_detail(session: requests.Session, challenge_id: int) -> Mapping[str, Any]:
-    resp = session.get(
-        urljoin(CTFD_URL, f"/api/v1/challenges/{challenge_id}"),
-        headers={"Accept": "application/json", **DEFAULT_HEADERS},
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    return payload.get("data") if isinstance(payload, dict) else {}
-
-def fetch_solved_challenge_ids(session: requests.Session) -> Set[int]:
-    endpoints = [
-        "/api/v1/teams/me/solves",
-        "/api/v1/users/me/solves",
-    ]
-    solved: Set[int] = set()
-    for path in endpoints:
-        try:
-            resp = session.get(
-                urljoin(CTFD_URL, path),
-                headers={"Accept": "application/json", **DEFAULT_HEADERS},
-            )
-        except requests.RequestException:
-            continue
-        if resp.status_code != 200:
-            continue
-        try:
-            payload = resp.json()
-        except ValueError:
-            continue
-        entries = payload.get("data") if isinstance(payload, dict) else []
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                continue
-            chall = entry.get("challenge") if isinstance(entry.get("challenge"), Mapping) else entry
-            if not isinstance(chall, Mapping):
-                continue
-            cid = chall.get("id")
-            try:
-                cid_int = int(cid)
-            except (TypeError, ValueError):
-                continue
-            solved.add(cid_int)
-        if solved:
-            break
-
-    return solved
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None:
@@ -261,27 +117,18 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
         return
     for challenge in entries:
         if int(challenge.get("value") or 0) != TARGET_POINTS:
+            safe = sanitize_component(challenge.get("name"), str(challenge.get("id")))
+            print(f"[  skipped  ] {safe:<28} pts={challenge.get('value'):<3} != TARGET_POINTS", flush=True)
             continue
         challenge_id = int(challenge.get("id") or 0)
         if challenge_id in solved_ids:
             safe = sanitize_component(challenge.get("name"), str(challenge_id))
             print(f"[  skipped  ] {safe:<28} pts={TARGET_POINTS:<3} solved", flush=True)
 
-            insert_entry(
-                DB_PATH,
-                {
-                "timestamp": time(),
-                "task": safe,
-                "challenge_id": challenge_id,
-                "flag": "",
-                "tokens_used": 0,
-                "status": "done",
-                "error": None,
-                },
-)
+            insert_entry(challenge_id, "done", task=safe, flag="")
 
             continue
-        detail = fetch_challenge_detail(session, challenge_id)
+        detail = ctfd.fetch_challenge_detail(session, challenge_id)
         if detail:
             challenge = {**challenge, **detail}
 
@@ -291,6 +138,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
         if existing_metadata_path.exists():
             # Never delete "touched" folders: they may contain useful Codex context.
             print(f"[  skipped  ] {safe_name:<28} pts={TARGET_POINTS:<3} already downloaded", flush=True)
+            insert_entry(challenge_id, "queued", task=safe_name)
             continue
 
         files = challenge.get("files") or []
@@ -309,6 +157,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             )
             continue
         persist_challenge_metadata(challenge, folder)
+        insert_entry(challenge_id, "queued", task=safe_name)
         attachment_names: list[str] = []
         for attachment in challenge.get("files") or []:
             if isinstance(attachment, Mapping):
@@ -345,14 +194,14 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
 
 def create_team_record(session: requests.Session) -> bool:
     try:
-        csrf = fetch_csrf_token(session, "/")
+        csrf = ctfd.fetch_csrf_token(session, "/")
     except RuntimeError as exc:
         logging.warning("could not read CSRF token for team record: %s", exc)
         csrf = ""
     payload = {
-        "name": TEAM_NAME,
-        "password": TEAM_PASSWORD,
-        "email": TEAM_EMAIL,
+        "name": ctfd.TEAM_NAME,
+        "password": ctfd.TEAM_PASSWORD,
+        "email": ctfd.TEAM_EMAIL,
         "affiliation": os.environ.get("TEAM_AFFILIATION", ""),
         "website": os.environ.get("TEAM_WEBSITE", ""),
         "country": os.environ.get("TEAM_COUNTRY", ""),
@@ -369,7 +218,7 @@ def create_team_record(session: requests.Session) -> bool:
         urljoin(CTFD_URL, "/api/v1/teams"), headers=headers, data=json.dumps(payload)
     )
     if resp.status_code in (200, 201):
-        logging.info("created team record for %s", TEAM_NAME)
+        logging.info("created team record for %s", ctfd.TEAM_NAME)
         return True
     logging.warning("could not create team record (status %s)", resp.status_code)
     return False
@@ -383,28 +232,20 @@ def ensure_team_membership(session: requests.Session) -> None:
     if resp.status_code == 200:
         return
     logging.info("team membership missing (%s); trying to create a record", resp.status_code)
-    create_team_record(session, TEAM_PASSWORD)
+    create_team_record(session)
 
 
 def main() -> int:
     verbose = os.environ.get("VERBOSE", "").strip().lower() in {"1", "true", "yes", "y"}
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, format="%(levelname)s: %(message)s")
-    if not TEAM_EMAIL or not TEAM_PASSWORD:
-        logging.error("TEAM_EMAIL/TEAM_PASSWORD must be set via .env or the environment")
-        return 1
-    session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
 
-    if not login(session, TEAM_EMAIL):
-        logging.info("login failed; attempting to register %s", TEAM_NAME)
-        if not register(session, TEAM_EMAIL):
-            return 1
-        if not login(session, TEAM_EMAIL):
-            logging.error("could not log in after registering")
-            return 1
+    session = ctfd.create_session()
+    if not session:
+        logging.error("failed to create CTFd session")
+        return 1
 
     ensure_team_membership(session)
-    solved_ids = fetch_solved_challenge_ids(session)
+    solved_ids = ctfd.fetch_solved_challenge_ids(session)
     if solved_ids:
         logging.debug("found %d solved challenge(s); will skip them", len(solved_ids))
 
@@ -414,7 +255,7 @@ def main() -> int:
         if exc.response.status_code == 403:
             logging.info("challenge API blocked (HTTP 403); retrying after ensuring team membership")
             ensure_team_membership(session)
-            solved_ids = fetch_solved_challenge_ids(session)
+            solved_ids = ctfd.fetch_solved_challenge_ids(session)
             download_challenges(session, solved_ids)
         else:
             raise

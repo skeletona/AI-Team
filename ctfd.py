@@ -5,6 +5,8 @@ import logging
 import requests
 import os
 import re
+from time import time
+import threading
 
 load_dotenv()
 
@@ -20,6 +22,9 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+SOLVED_LOCK = threading.Lock()
+_SOLVED_CACHE = {}
+SOLVED_CACHE_SECONDS = 60
 
 
 def login(session: requests.Session) -> bool:
@@ -185,3 +190,49 @@ def solved_ids_cached(session: requests.Session) -> set[int]:
         _SOLVED_CACHE["ts"] = now
         _SOLVED_CACHE["ids"] = solved
     return solved
+
+
+def get_task_description_from_ctfd_url(
+    session: requests.Session, url: str
+) -> Optional[tuple[str, str]]:
+    logging.info("found CTFd page: %s", url)
+    # TODO: This doesn't seem to work
+    m = re.match(r".*/challenges#(\w+)-(\d+)", url)
+    if m:
+        name, chall_id = m.groups()
+        logging.info("extracting CTFd challenge %s (%s)", name, chall_id)
+        try:
+            detail = fetch_challenge_detail(session, int(chall_id))
+            if detail:
+                return detail["name"], f'{detail["name"]}\n\n{detail["description"]}'
+        except Exception as exc:
+            logging.warning("failed to fetch challenge detail: %s", exc)
+    return None
+
+
+def extract_tasks_from_ctfd(session: requests.Session, url: str, seen_tasks: set[str]) -> list[dict[str, Any]]:
+    tasks = []
+    logging.info("found CTFd, enumerating challenges")
+    solved_ids = fetch_solved_challenge_ids(session)
+    # This is not a great way to get challenges, but it's what we have
+    for chall_id in range(1, 100):
+        if chall_id in solved_ids:
+            continue
+        try:
+            detail = fetch_challenge_detail(session, chall_id)
+            if not detail:
+                continue
+            if detail["name"] in seen_tasks:
+                continue
+            logging.info("found task: %s", detail["name"])
+            tasks.append(
+                {
+                    "name": detail["name"],
+                    "description": f'{detail["name"]}\n\n{detail["description"]}',
+                    "url": url,
+                }
+            )
+            seen_tasks.add(detail["name"])
+        except Exception as exc:
+            logging.debug("failed to fetch challenge %s: %s", chall_id, exc)
+    return tasks

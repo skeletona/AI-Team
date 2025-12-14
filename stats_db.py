@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
 import logging
 import sqlite3
+from time import time
 from pathlib import Path
 from typing import Mapping
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _INITIALIZED: set[str] = set()
-
+EXPECTED_COLUMNS = ["challenge_id", "timestamp", "task", "status", "flag", "tokens_used", "error"]
+DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(
@@ -28,10 +34,9 @@ def _create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL NOT NULL,
+            challenge_id INTEGER PRIMARY KEY,
+            timestamp INTEGER NOT NULL,
             task TEXT,
-            challenge_id INTEGER UNIQUE,
             flag TEXT,
             tokens_used INTEGER,
             status TEXT,
@@ -43,9 +48,6 @@ def _create_table(conn: sqlite3.Connection) -> None:
 
 def _ensure_index(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS stats_by_challenge ON stats(challenge_id)")
-
-
-EXPECTED_COLUMNS = ["id", "timestamp", "task", "challenge_id", "flag", "tokens_used", "status", "error"]
 
 
 def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -93,49 +95,44 @@ def ensure_stats_db(path: Path) -> None:
     _INITIALIZED.add(resolved)
 
 
-def insert_entry(path: Path, entry: Mapping[str, object]) -> None:
-    ensure_stats_db(path)
-    challenge_id = entry.get("challenge_id")
+def insert_entry(
+    challenge_id: int,
+    status: str,
+    task: Optional[str] = None,
+    flag: Optional[str] = None,
+    tokens_used: int = 0,
+    error: Optional[str] = None,
+) -> None:
+    ensure_stats_db(DB_PATH)
+
     stmt = """
         INSERT INTO stats
-            (timestamp, task, challenge_id, flag, tokens_used, status, error)
+            (challenge_id, timestamp, task, status, flag, tokens_used, error)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(challenge_id) DO UPDATE SET
-            timestamp = excluded.timestamp,
-            task = excluded.task,
-            flag = excluded.flag,
+            timestamp   = excluded.timestamp,
+            task        = COALESCE(excluded.task, task),
+            status      = excluded.status,
+            flag        = excluded.flag,
             tokens_used = excluded.tokens_used,
-            status = excluded.status,
-            error = excluded.error
+            error       = excluded.error
     """
     params = (
-        float(entry.get("timestamp") or 0.0),
-        entry.get("task"),
-        int(challenge_id) if isinstance(challenge_id, int) else None,
-        entry.get("flag"),
-        _to_int(entry.get("tokens_used")),
-        entry.get("status"),
-        entry.get("error"),
+        challenge_id,   int(time()),    task,
+        status,         flag,           tokens_used,
+        error,
     )
-    with _connect(path) as conn:
-        if isinstance(challenge_id, int) and entry.get("status") != "running":
-            conn.execute(
-                "DELETE FROM stats WHERE challenge_id = ? AND status = ?",
-                (int(challenge_id), "running"),
-            )
+    with _connect(DB_PATH) as conn:
         conn.execute(stmt, params)
 
 
 def read_entries(path: Path) -> list[Mapping[str, object]]:
-    if not path.exists():
-        return []
     ensure_stats_db(path)
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM stats ORDER BY timestamp ASC").fetchall()
     return [
         {
-            "id": row["id"],
             "timestamp": row["timestamp"],
             "task": row["task"],
             "challenge_id": row["challenge_id"],
@@ -149,33 +146,18 @@ def read_entries(path: Path) -> list[Mapping[str, object]]:
     ]
 
 
-def dedupe_stats(path: Path) -> None:
-    ensure_stats_db(path)
-    with _connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, challenge_id, task, timestamp FROM stats ORDER BY timestamp DESC, id DESC"
-        ).fetchall()
-        seen: set[str] = set()
-        delete_ids: list[int] = []
-        for row in rows:
-            key: str | None = None
-            cid = row["challenge_id"]
-            if cid is not None:
-                key = f"cid:{cid}"
-            elif row["task"]:
-                key = f"task:{row['task']}"
-            if key is None:
-                continue
-            if key in seen:
-                delete_ids.append(row["id"])
-            else:
-                seen.add(key)
-        if delete_ids:
-            conn.executemany("DELETE FROM stats WHERE id = ?", [(did,) for did in delete_ids])
-
-
 def delete_status(path: Path, status: str) -> None:
     ensure_stats_db(path)
     with _connect(path) as conn:
         conn.execute("DELETE FROM stats WHERE status = ?", (status,))
+
+
+def get_entry(path: Path, challenge_id: int) -> dict:
+    ensure_stats_db(path)
+    with _connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM stats WHERE challenge_id = ?", (challenge_id,),
+        ).fetchone()
+    return dict(row)
+
