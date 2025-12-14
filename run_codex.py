@@ -10,25 +10,21 @@ happen in normal mode;
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import random
+from random import shuffle
 import re
-import shlex
-import shutil
-import signal
 import subprocess
-import sys
 import threading
-import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 import concurrent.futures
 from time import time
 from dotenv import load_dotenv
+
 from ctfd import *
 import stats_db
+from models import *
 
 load_dotenv()
 
@@ -44,7 +40,6 @@ STATS_LOCK = threading.Lock()
 SOLVED_LOCK = threading.Lock()
 _SOLVED_CACHE: dict[str, object] = {"ts": 0.0, "ids": set()}
 SOLVED_CACHE_SECONDS = int(os.environ.get("SOLVED_CACHE_SECONDS", "30"))
-OVERRIDES_PATH = Path(os.environ.get("OVERRIDES_PATH", "task_overrides.json"))
 DEFAULT_CODEX_COMMAND = ["codex", "exec", "-s", "danger-full-access", "-m", "gpt-5.1-codex-mini", "--skip-git-repo-check"]
 RUNNING_CODEX: dict[int, subprocess.Popen] = {}
 STOP_EVENT = threading.Event()
@@ -53,14 +48,8 @@ STOP_EVENT = threading.Event()
 def kill_all_codex():
     for task_id, proc in list(RUNNING_CODEX.items()):
         proc.kill()
+        stats_db.insert_entry(task_id, "interrupted")
         RUNNING_CODEX.pop(task_id, None)
-
-
-def summarize_description(description: str, limit: int = 120) -> str:
-    normalized = " ".join(description.replace("\n", " ").split())
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - 3].rstrip() + "..."
 
 
 def strip_ansi(text: str) -> str:
@@ -90,14 +79,13 @@ def extract_thinking(output: str) -> str:
     return "\n".join(snippet).rstrip()
 
 
-def persist_task_logs(task_id: int, task_info: dict[int, dict[str, Any]], output: str) -> None:
-    task_name = task_info["task"]
+def persist_task_logs(task: Task, output: str) -> None:
     try:
-        logs_root = THINKING_LOGS_DIR / task_name
+        logs_root = THINKING_LOGS_DIR / task.name
         logs_root.mkdir(parents=True, exist_ok=True)
         (logs_root / "thinking.log").write_text(extract_thinking(output), encoding="utf-8")
     except OSError as exc:
-        logging.warning("failed to write logs under %s: %s", task_name, exc)
+        logging.warning("failed to write logs under %s: %s", task.name, exc)
 
 
 def build_flag_regex() -> re.Pattern[str]:
@@ -124,54 +112,11 @@ def build_flag_regex() -> re.Pattern[str]:
     return flag_regex
 
 
-def get_codex_command(prompt: str) -> list[str]:
-    """
-    Build the Codex command, appending the prompt unless a placeholder is present.
-    If CODEX_COMMAND contains "{prompt}" or "{}", it will be substituted; otherwise,
-    the prompt is appended as the final argument.
-    """
-    command_spec = os.environ.get("CODEX_COMMAND")
-    if command_spec:
-        parts = shlex.split(command_spec)
-        formatted = [
-            part.replace("{prompt}", prompt).replace("{}", prompt) for part in parts
-        ]
-        if formatted != parts:
-            return formatted
-        return parts + [prompt]
-    return [*DEFAULT_CODEX_COMMAND, prompt]
-
-
-def prepare_codex_environment(home_override: Optional[Path] = None) -> Mapping[str, str]:
-    env = dict(os.environ)
-    desired_home = home_override or Path.cwd()
-    env["HOME"] = str(desired_home)
-    target_state = desired_home / ".codex"
-    if target_state.exists():
-        return env
-    source_state = Path.home() / ".codex"
-    try:
-        if source_state.exists():
-            shutil.copytree(source_state, target_state)
-        else:
-            target_state.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        logging.warning("failed to prepare codex state in %s: %s", target_state, exc)
-        target_state.mkdir(parents=True, exist_ok=True)
-    return env
-
-
 def run_codex_with_logs(
     command: list[str],
-    task_dir: Path,
-    env: Mapping[str, str],
-    challenge_id: Optional[int] = None,
+    task: Task,
 ) -> str:
-    """
-    Запускает Codex, пишет stdout/stderr в thinking.log и выводит информацию
-    о токенах только после естественного завершения.
-    """
-    logs_root = THINKING_LOGS_DIR / task_dir.name
+    logs_root = THINKING_LOGS_DIR / task.name
     logs_root.mkdir(parents=True, exist_ok=True)
 
     output_log = logs_root / "thinking.log"
@@ -181,21 +126,21 @@ def run_codex_with_logs(
     with output_log.open("wb") as fh:
         proc = subprocess.Popen(
             command,
-            cwd=task_dir,
+            cwd=TASKS_ROOT / task.name,
             stdout=fh,
             stderr=subprocess.STDOUT,
-            env=env,
+            env=dict(os.environ),
         )
-        if challenge_id is not None:
-            RUNNING_CODEX[challenge_id] = proc
+        if task.id is not None:
+            RUNNING_CODEX[task.id] = proc
         try:
             proc.wait(timeout=timeout)
             completed_normally = True
         except subprocess.TimeoutExpired:
             completed_normally = False
         finally:
-            if challenge_id is not None:
-                RUNNING_CODEX.pop(challenge_id, None)
+            if task.id is not None:
+                RUNNING_CODEX.pop(task.id, None)
 
     output = output_log.read_text(encoding="utf-8", errors="ignore")
     if completed_normally:
@@ -204,32 +149,20 @@ def run_codex_with_logs(
             print(f"tokens used: {tokens}", flush=True)
     return output
 
+
 def run_codex(
-    task_id: int,
-    task_info: dict[int, dict[str, Any]],
+    task: Task,
     prompt: str,
-    env: Mapping[str, str],
 ) -> str:
-    task_name = task_info["task"]
-    task_dir = TASKS_ROOT / task_name
+    task_dir = TASKS_ROOT / task.name
 
-    command = get_codex_command(prompt)
-    if not command:
-        raise ValueError("CODEX_COMMAND must not be empty")
-
-    # Находим реальный исполняемый бинарник
-    executable = shutil.which(command[0])
-    if not executable:
-        logging.error("Codex binary %s not found on PATH", command[0])
-        raise FileNotFoundError(command[0])
-    command[0] = executable
-
-    logging.info("running codex for %s", task_name)
-    return run_codex_with_logs(command, task_dir, env, challenge_id=task_id)
+    logging.info("running codex for %s", task.name)
+    command = DEFAULT_CODEX_COMMAND + [prompt]
+    return run_codex_with_logs(command, task)
 
 
-def local_attachment_names(task_id: int, task_info: dict[int, dict[str, Any]]) -> list[str]:
-    task_dir = task_info[task_id]["dir"]
+def local_attachment_names(task: Task) -> list[str]:
+    task_dir = TASKS_ROOT / task.name
     return sorted(
         p.name
         for p in task_dir.iterdir()
@@ -237,9 +170,8 @@ def local_attachment_names(task_id: int, task_info: dict[int, dict[str, Any]]) -
     )
 
 
-def build_codex_prompt(task_id: int, task_info: dict[str, Any]) -> str:
-    task_dir = TASKS_ROOT / task_info["task"]
-    context_path = task_dir / "codex_context.txt"
+def build_codex_prompt(task: Task) -> str:
+    context_path = TASKS_ROOT / task.name / "codex_context.txt"
     if context_path.exists():
         context = context_path.read_text(encoding="utf-8", errors="replace").strip()
     else:
@@ -264,44 +196,36 @@ def mark_all_running_failed(reason: str = "interrupted") -> None:
     entries = stats_db.read_entries(DB_PATH)
     for entry in entries:
         if entry["status"] == "running":
-            cid = entry["challenge_id"]
+            cid = entry["id"]
             stats_db.insert_entry(cid, "failed", error=reason)
 
 
-def process_task(task_id: int, task_info: dict[str, Any]) -> int:
-    task_name = task_info["task"]
-
+def process_task(task: Task) -> int:
     session = create_session()
     if session is None:
         logging.warning("could not login to CTFd; running without submissions", CTFD_URL)
-    elif task_id in solved_ids_cached(session):
-        stats_db.insert_entry(challenge_id, "solved", error="solved by a human")
-        logging.info("skipping %s (%s): solved while queued", task_name, challenge_id)
+    elif task.id in solved_ids_cached(session):
+        stats_db.insert_entry(task.id, "solved", error="solved by a human")
+        logging.info("skipping %s (%s): solved while queued", task.name, task.id)
         return 0
 
-    prompt = build_codex_prompt(task_id, task_info)
-    stats_db.insert_entry(task_id, "running")
+    prompt = build_codex_prompt(task)
+    stats_db.insert_entry(task.id, "running")
     last_output = ""
 
     for attempt in range(1, MAX_CODEX_ATTEMPTS + 1):
         if STOP_EVENT.is_set():
             return
         try:
-            codex_env = prepare_codex_environment()
-            output = run_codex(
-                task_id,
-                task_info,
-                prompt=prompt,
-                env=codex_env,
-            )
+            output = run_codex(task, prompt)
         except FileNotFoundError:
             return 1
         last_output = output
 
-        persist_task_logs(task_id, task_info, output)
+        persist_task_logs(task, output)
         candidates = [m.group(0) for m in flag_regex.finditer(output)]
         flag = candidates[-1] if candidates else None
-        stats_db.insert_entry(task_id, "done", flag=flag, tokens_used=extract_tokens_used(output))
+        stats_db.insert_entry(task.id, "done", flag=flag, tokens_used=extract_tokens_used(output))
 
         if not candidates:
             prompt = (
@@ -312,11 +236,11 @@ def process_task(task_id: int, task_info: dict[str, Any]) -> int:
 
         validated = False
         for candidate in reversed(candidates):
-            if submit_flag(session, challenge_id, candidate):
-                logging.info(f"successfull flag for {task_name}: {candidate}")
+            if submit_flag(session, id, candidate):
+                logging.info(f"successfull flag for {task.name}: {candidate}")
                 return 0
             else:
-                logging.info(f"incorrect flag for {task_name}: {candidate}")
+                logging.info(f"incorrect flag for {task.name}: {candidate}")
 
         prompt = (
             prompt
@@ -324,8 +248,8 @@ def process_task(task_id: int, task_info: dict[str, Any]) -> int:
             " Keep working and print ONLY the correct final flag."
         )
 
-    logging.warning(f"max attempts reached for {task_name}")
-    stats_db.insert_entry(task_id, "stopped", tokens_used=extract_tokens_used(last_output), error="max attempts reached")
+    logging.warning(f"max attempts reached for {task.name}")
+    stats_db.insert_entry(task.id, "stopped", tokens_used=extract_tokens_used(last_output), error="max attempts reached")
     return 0
 
 
@@ -339,44 +263,46 @@ def run_tasks() -> int:
         logging.error("no tasks found in the database")
         return 0
 
-    tasks: dict[int, dict[str, Any]] = {}
+    tasks: list[Tasks] = []
     for entry in db_entries:
-        challenge_id = entry["challenge_id"]
-        task_name = entry["task"]
+        challenge_id = entry["id"]
+        task = Task(**entry)
         
-        task_dir = TASKS_ROOT / task_name
+        task_dir = TASKS_ROOT / task.name
         if not task_dir.is_dir():
-            logging.warning(f"task directory not found for task '{task_name}'")
+            logging.warning(f"task directory not found for task '{task.name}'")
             continue
-        tasks[challenge_id] = entry
-
-    codex_env = prepare_codex_environment()
+        tasks.append(task)
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CODEX_WORKERS)
-    pending = list(tasks.items())
-    random.shuffle(pending)
+    pending = tasks
+    shuffle(pending)
     active = set()
+
+    pending: list[Task] = list(tasks)
+    active: set[concurrent.futures.Future] = set()
 
     try:
         task = pending.pop(0)
-        fut = executor.submit(process_task, task[0], task[1])
+        task_dir = TASKS_ROOT / task.name
+        fut = executor.submit(process_task, task)
         active.add(fut)
 
         while active:
             while pending and len(active) < MAX_CODEX_WORKERS:
                 task = pending.pop(0)
-                fut = executor.submit(process_task, task[0], task[1])
+                task_dir = TASKS_ROOT / task.name
+                fut = executor.submit(process_task, task_dir, task.id)
                 active.add(fut)
-
             done, active = concurrent.futures.wait(
                 active, return_when=concurrent.futures.FIRST_COMPLETED
             )
-
             for f in done:
                 f.result()
 
     except KeyboardInterrupt:
-        logging.info("killing all processes")
+        print()
+        logging.info("Killing all processes")
         STOP_EVENT.set()
         kill_all_codex()
         for f in active:
@@ -393,5 +319,5 @@ if __name__ == "__main__":
     flag_regex = build_flag_regex()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
     
-    stats_db.delete_status(DB_PATH, "running")
+    stats_db.move_status(DB_PATH, "running", "failed")
     run_tasks()

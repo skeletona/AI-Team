@@ -19,34 +19,25 @@
     <main class="page-shell">
       <header class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">AI-Team · Automated CTF Coverage</p>
-          <h1>{{ title or "Codex Task Stats" }}</h1>
-          <p class="hero-subtitle">
-            Autonomous fleet overview for every Codex-run challenge.
-          </p>
-        </div>
-        <div class="hero-meta">
-          <span class="status-pill status-{{ latest_status | lower }}">
-            Latest status: {{ latest_status | capitalize }}
-          </span>
+          <h1>AI Team overview</h1>
         </div>
       </header>
 
       <section class="summary-and-budget">
         <div class="summary-grid">
           <article class="summary-card">
-            <p class="label">{{ summary.runs_label or "Runs" }}</p>
-            <p class="value">{{ summary.runs | default(0) }}</p>
+            <p class="label">Runs</p>
+            <p class="value">{{ runs | default(0) }}</p>
             <p class="hint">logged attempts</p>
           </article>
           <article class="summary-card">
             <p class="label">Flags</p>
-            <p class="value">{{ summary.flags | default(0) }}</p>
+            <p class="value">{{ flags | default(0) }}</p>
             <p class="hint">unique captures</p>
           </article>
           <article class="summary-card">
             <p class="label">Tokens</p>
-            <p class="value">{{ summary.tokens | default(0) }}</p>
+            <p class="value">{{ tokens | default(0) }}</p>
             <p class="hint">spent so far</p>
           </article>
         </div>
@@ -96,11 +87,6 @@
         </article>
       </section>
 
-      {% set queue_preview = queue[:6] %}
-      {% set running_preview = running[:6] %}
-      {% set solved_preview = solved[:6] %}
-      {% set failed_preview = failed[:6] %}
-
       <section class="status-grid">
         {% macro status_section(title, items, hint_text, extra_class="") %}
           <article class="status-panel {{ extra_class }}">
@@ -121,9 +107,7 @@
                         <p class="task-hash">#{{ item.challenge_id }}</p>
                       {% endif %}
                     </div>
-                    {% if item.detail_href %}
-                      <a class="tiny-link" href="{{ item.detail_href }}">open</a>
-                    {% endif %}
+                <a class="tiny-link" href="/task/{{ item.id }}">open</a>
                   </div>
                   <div class="status-meta">
                     <span class="badge badge-{{ item.status | lower }}">{{ item.status | capitalize }}</span>
@@ -142,10 +126,10 @@
           </article>
         {% endmacro %}
 
-        {{ status_section("Queued", queue_preview, "waiting for execution", "panel-queue") }}
-        {{ status_section("Running", running_preview, "currently burning tokens", "panel-running") }}
-        {{ status_section("Solved", solved_preview, "victories", "panel-solved") }}
-        {{ status_section("Failed", failed_preview, "needs attention", "panel-failed") }}
+        {{ status_section("Queued", cards["queued"], "waiting for execution", "panel-queue") }}
+        {{ status_section("Running", cards["running"], "currently burning tokens", "panel-running") }}
+        {{ status_section("Solved", cards["solved"], "victories", "panel-solved") }}
+        {{ status_section("Failed", cards["failed"], "needs attention", "panel-failed") }}
       </section>
       </main>
   </body>

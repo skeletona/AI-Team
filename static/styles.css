@@ -60,7 +60,7 @@ body {
 .page-shell {
   position: relative;
   z-index: 2;
-  max-width: 1200px;
+  max-width: 90%;
   margin: 0 auto;
   padding: 3rem 1.5rem 4rem;
 }

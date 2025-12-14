@@ -2,7 +2,7 @@
 """
 Simple stats dashboard for Codex task runs.
 
-Reads entries from STATS_PATH (default: codex_stats.db) and serves a
+Reads entries from DB_PATH (default: codex_stats.db) and serves a
 small HTML page showing recent runs, Codex thinking snippets, attempted flags,
 and token usage totals, using Flask.
 """
@@ -21,6 +21,7 @@ from html import escape
 from pathlib import Path
 from typing import List, Mapping, Optional
 from urllib.parse import urljoin
+import logging
 
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request
 from flask_sock import Sock
@@ -29,7 +30,8 @@ from dotenv import load_dotenv
 
 import stats_db
 
-STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
+
+DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
 STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
 PORT = int(os.environ.get("STATS_PORT", "8000"))
@@ -47,22 +49,8 @@ CODEX_BUDGET_COMMAND = os.environ.get("CODEX_BUDGET_COMMAND", "").strip()
 
 load_dotenv()
 
-CTFD_URL = os.environ.get("CTFD_URL", "https://play.nitectf25.live").rstrip("/")
-TEAM_NAME = os.environ.get("TEAM_NAME", os.environ.get("AI_TEAM_NAME", "AI-Team"))
-TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL", os.environ.get("EMAIL", os.environ.get("TEAM_EMAIL")))
-TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD", os.environ.get("TEAM_PASSWORD"))
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
-        " Chrome/120 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
 _BUDGET_CACHE: dict[str, object] = {"ts": 0.0, "lines": []}
 _BUDGET_CACHE_TTL_SECONDS = 15.0
-_SOLVES_CACHE: dict[str, object] = {"ts": 0.0, "ids": set()}
 _CHALLENGES_CACHE: dict[str, object] = {"ts": 0.0, "by_id": {}}
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -71,167 +59,6 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text or "")
 
-
-def fetch_csrf_token(session: requests.Session, path: str) -> Optional[str]:
-    try:
-        resp = session.get(urljoin(CTFD_URL, path), headers=DEFAULT_HEADERS, timeout=10)
-        resp.raise_for_status()
-    except Exception:
-        return None
-    html = resp.text
-    patterns = [
-        r'name="nonce"[^>]*value="([^"]+)"',
-        r'name="csrf_token"[^>]*value="([^"]+)"',
-        r"'csrfNonce':\s*\"([0-9a-f]+)\"",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html)
-        if match:
-            return match.group(1)
-    return None
-
-
-def is_logged_in(session: requests.Session) -> bool:
-    try:
-        resp = session.get(
-            urljoin(CTFD_URL, "/api/v1/users/me"),
-            headers={"Accept": "application/json", **DEFAULT_HEADERS},
-            allow_redirects=False,
-            timeout=10,
-        )
-    except Exception:
-        return False
-    if resp.status_code != 200:
-        return False
-    try:
-        payload = resp.json()
-    except ValueError:
-        return False
-    return bool(payload.get("data"))
-
-def login_ctfd(session: requests.Session) -> bool:
-    if not TEAM_EMAIL or not TEAM_PASSWORD:
-        return False
-    nonce = fetch_csrf_token(session, "/login")
-    if not nonce:
-        return False
-    payload = {"name": TEAM_NAME, "email": TEAM_EMAIL, "password": TEAM_PASSWORD, "nonce": nonce}
-    try:
-        resp = session.post(urljoin(CTFD_URL, "/login"), data=payload, headers=DEFAULT_HEADERS, timeout=15)
-    except Exception:
-        return False
-    body = (resp.text or "").lower()
-    if resp.status_code == 403 or "cf-turnstile" in body:
-        return False
-    return is_logged_in(session)
-
-def fetch_solved_ids_cached(now_ts: float) -> set[int]:
-    try:
-        cached_ts = float(_SOLVES_CACHE.get("ts") or 0.0)
-        cached = _SOLVES_CACHE.get("ids")
-        if (now_ts - cached_ts) <= SOLVES_CACHE_SECONDS and isinstance(cached, set):
-            return set(cached)
-    except Exception:
-        pass
-
-    session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
-    if not login_ctfd(session):
-        return set()
-    solved: set[int] = set()
-    for path in ("/api/v1/teams/me/solves", "/api/v1/users/me/solves"):
-        try:
-            resp = session.get(
-                urljoin(CTFD_URL, path),
-                headers={"Accept": "application/json", **DEFAULT_HEADERS},
-                timeout=15,
-            )
-        except requests.RequestException:
-            continue
-        if resp.status_code != 200:
-            continue
-        try:
-            payload = resp.json()
-        except ValueError:
-            continue
-        data = payload.get("data") if isinstance(payload, dict) else []
-        if not isinstance(data, list):
-            continue
-        for entry in data:
-            if not isinstance(entry, Mapping):
-                continue
-            chall = entry.get("challenge") if isinstance(entry.get("challenge"), Mapping) else entry
-            if not isinstance(chall, Mapping):
-                continue
-            cid = chall.get("id")
-            try:
-                solved.add(int(cid))
-            except (TypeError, ValueError):
-                continue
-        if solved:
-            break
-    _SOLVES_CACHE["ts"] = now_ts
-    _SOLVES_CACHE["ids"] = solved
-    return solved
-
-def fetch_challenges_cached(now_ts: float) -> dict[int, Mapping[str, object]]:
-    try:
-        cached_ts = float(_CHALLENGES_CACHE.get("ts") or 0.0)
-        cached = _CHALLENGES_CACHE.get("by_id")
-        if (now_ts - cached_ts) <= CHALLENGES_CACHE_SECONDS and isinstance(cached, dict):
-            return {k: v for k, v in cached.items() if isinstance(k, int)}
-    except Exception:
-        pass
-    try:
-        resp = requests.get(
-            urljoin(CTFD_URL, "/api/v1/challenges"),
-            headers={"Accept": "application/json", **DEFAULT_HEADERS},
-            timeout=15,
-        )
-    except requests.RequestException:
-        return {}
-    if resp.status_code != 200:
-        return {}
-    try:
-        payload = resp.json()
-    except ValueError:
-        return {}
-    entries = payload.get("data") if isinstance(payload, dict) else []
-    by_id: dict[int, Mapping[str, object]] = {}
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                continue
-            cid = entry.get("id")
-            try:
-                cid_int = int(cid)
-            except (TypeError, ValueError):
-                continue
-            by_id[cid_int] = entry
-    _CHALLENGES_CACHE["ts"] = now_ts
-    _CHALLENGES_CACHE["by_id"] = by_id
-    return by_id
-
-def fetch_challenge_name(session: requests.Session, challenge_id: int) -> Optional[str]:
-    try:
-        resp = session.get(
-            urljoin(CTFD_URL, f"/api/v1/challenges/{challenge_id}"),
-            headers={"Accept": "application/json", **DEFAULT_HEADERS},
-            timeout=15,
-        )
-    except requests.RequestException:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        payload = resp.json()
-    except ValueError:
-        return None
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, Mapping):
-        return None
-    name = data.get("name")
-    return str(name) if isinstance(name, str) and name else None
 
 def _format_tokens(value: int) -> str:
     if value >= 1_000_000:
@@ -248,6 +75,7 @@ def _percent_left(used: int, limit: int) -> int:
         return 100
     ratio = min(max(used / limit, 0.0), 1.0)
     return int(round((1.0 - ratio) * 100))
+
 
 def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
     if not CODEX_BUDGET_COMMAND:
@@ -289,6 +117,7 @@ def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 sock = Sock(app)
+
 
 def format_thinking_html(text: str) -> str:
     text = strip_ansi(text or "")
@@ -340,22 +169,18 @@ def format_thinking_html(text: str) -> str:
     flush_term_out()
     return "\n".join(out) if out else '<div class="term-muted">No thinking captured.</div>'
 
-def load_task_thinking(task_name: str) -> Optional[str]:
-    if not task_name:
-        return None
-    preferred = THINKING_LOGS_DIR / task_name / "thinking.log"
-    legacy = TASKS_ROOT / task_name / "thinking.log"
-    path = preferred if preferred.exists() else legacy
+
+def load_task_thinking(task: Task) -> Optional[str]:
+    path = THINKING_LOGS_DIR / task.name / "thinking.log"
     try:
-        if not path.exists():
-            return None
-        content = strip_ansi(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        logging.error(f"Error reading thinking.log: {path}")
         return None
-    # Avoid rendering extremely large logs in the browser.
     if len(content) > 200_000:
         return content[:200_000] + "\n\n[truncated]"
     return content
+
 
 def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[str]:
     if not task_name:
@@ -377,103 +202,6 @@ def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[
         data = prefix + data
     return strip_ansi(data.decode("utf-8", errors="replace"))
 
-def extract_thinking_from_stream(text: str) -> str:
-    if not text:
-        return ""
-    text = strip_ansi(text)
-    lower = text.lower()
-    idx = lower.find("thinking")
-    if idx == -1:
-        return text
-    snippet = text[idx:].splitlines()
-    if snippet:
-        snippet = snippet[1:]
-    return "\n".join(snippet).rstrip()
-
-def load_entries() -> List[Mapping[str, object]]:
-    try:
-        return stats_db.read_entries(STATS_PATH)
-    except Exception:
-        return []
-
-def mark_stale_running(entries: List[Mapping[str, object]], now_ts: float) -> List[Mapping[str, object]]:
-    latest_by_id: dict[int, Mapping[str, object]] = {}
-    for e in entries:
-        cid = e.get("challenge_id")
-        if not isinstance(cid, int):
-            continue
-        prev = latest_by_id.get(cid)
-        if not prev or float(e.get("timestamp") or 0) >= float(prev.get("timestamp") or 0):
-            latest_by_id[cid] = e
-    out = list(entries)
-    for cid, e in latest_by_id.items():
-        if str(e.get("status") or "done") != "running":
-            continue
-        ts = float(e.get("timestamp") or 0)
-        if now_ts - ts <= STALE_RUNNING_SECONDS:
-            continue
-        out.append(
-            {
-                "task": e.get("task"),
-                "challenge_id": cid,
-                "flag": e.get("flag"),
-                "tokens_used": e.get("tokens_used"),
-                "thinking": e.get("thinking"),
-                "status": "stalled",
-                "error": "runner restarted",
-                "timestamp": now_ts,
-            }
-        )
-    return out
-
-def mark_attempted_without_success(entries: List[Mapping[str, object]], now_ts: float) -> List[Mapping[str, object]]:
-    # If we have logs for a task but no successful 'done' flag, mark it failed-ish
-    # so the dashboard doesn't keep it queued forever after restarts.
-    latest_by_id: dict[int, Mapping[str, object]] = {}
-    has_success: set[int] = set()
-    for e in entries:
-        cid = e.get("challenge_id")
-        if not isinstance(cid, int):
-            continue
-        if str(e.get("status") or "") == "done" and e.get("flag"):
-            has_success.add(cid)
-        prev = latest_by_id.get(cid)
-        if not prev or float(e.get("timestamp") or 0) >= float(prev.get("timestamp") or 0):
-            latest_by_id[cid] = e
-
-    out = list(entries)
-    for cid, e in latest_by_id.items():
-        if cid in has_success:
-            continue
-        status = str(e.get("status") or "done")
-        if status != "queued":
-            continue
-        task_name = str(e.get("task") or "")
-        if not task_name:
-            continue
-        log_path = THINKING_LOGS_DIR / task_name / "thinking.log"
-        if not log_path.exists():
-            continue
-        try:
-            last_update = log_path.stat().st_mtime
-        except OSError:
-            last_update = None
-        # If logs are actively updating, leave it queued/running; don't force-fail.
-        if last_update is not None and (now_ts - float(last_update)) <= RUNNING_LOG_STALE_SECONDS:
-            continue
-        out.append(
-            {
-                "task": task_name,
-                "challenge_id": cid,
-                "flag": None,
-                "tokens_used": e.get("tokens_used"),
-                "thinking": e.get("thinking"),
-                "status": "failed",
-                "error": "previous attempt exists (logs found)",
-                "timestamp": now_ts,
-            }
-        )
-    return out
 
 def _log_last_update_ts(task_name: str) -> Optional[float]:
     candidates = [THINKING_LOGS_DIR / task_name / "thinking.log"]
@@ -486,233 +214,69 @@ def _log_last_update_ts(task_name: str) -> Optional[float]:
     return None
 
 
-def find_task_dir_by_id(challenge_id: int) -> Optional[Path]:
-    for entry in TASKS_ROOT.iterdir():
-        if not entry.is_dir():
-            continue
-        meta = entry / "metadata.json"
-        if not meta.exists():
-            continue
-        try:
-            data = json.loads(meta.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        try:
-            mid = int(data.get("id"))
-        except Exception:
-            continue
-        if mid == challenge_id:
-            return entry
-    return None
+def task_view_model(task_id: int) -> Mapping[str, object]:
+    task = stats_db.get_entry(DB_PATH, task_id)
 
-
-def build_view_model(
-    entries: list[Mapping[str, object]],
-    task_id: int | None = None,
-) -> Mapping[str, object]:
-    now = datetime.now().timestamp()
-
-    # --- Normalize / mark states ---
-    entries = mark_stale_running(entries, now)
-    entries = mark_attempted_without_success(entries, now)
-
-    filtered = (
-        entries
-        if task_id is None
-        else [e for e in entries if e.get("challenge_id") == task_id]
-    )
-
-    total_tokens = sum(int(e.get("tokens_used") or 0) for e in filtered)
-    flags_found = [e for e in filtered if e.get("flag")]
-
-    title = "Codex Task Stats" if task_id is None else f"Codex Task Stats – {task_id}"
-    summary = {
-        "runs_label": "Total runs" if task_id is None else "Runs",
-        "runs": len(filtered),
-        "flags": len(flags_found),
-        "tokens": total_tokens,
+    return {
+        "title": task.name,
+        "task_id": task.id,
+        "task_name": task.name,
+        "runs": 0,
+        "tokens": task.tokens,
     }
 
-    # --- Budgets (index page only, no network) ---
-    budgets: Mapping[str, object] = {}
-    if task_id is None:
-        window_5h = [e for e in entries if now - float(e.get("timestamp") or 0) <= 5 * 3600]
-        window_week = [e for e in entries if now - float(e.get("timestamp") or 0) <= 7 * 86400]
 
-        tokens_5h = sum(int(e.get("tokens_used") or 0) for e in window_5h)
-        tokens_week = sum(int(e.get("tokens_used") or 0) for e in window_week)
+def stats_view_model() -> Mapping[str, object]:
+    entries = stats_db.read_entries(DB_PATH)
+    tokens = sum(task.tokens for task in entries)
 
-        budgets = {
-            "tokens_5h": tokens_5h,
-            "limit_5h": TOKEN_LIMIT_5H,
-            "tokens_week": tokens_week,
-            "limit_week": TOKEN_LIMIT_WEEK,
-        }
-
-    # --- Latest status ---
-    latest_status = "done"
-    source = entries if task_id is None else filtered
-    for e in reversed(source):
-        status = str(e.get("status") or "done")
-        if status == "running":
-            latest_status = "running"
-            break
-        latest_status = status
-        break
-
-    # --- Buckets for index page ---
-    queue: list[Mapping[str, object]] = []
-    running: list[Mapping[str, object]] = []
-    solved: list[Mapping[str, object]] = []
-    failed: list[Mapping[str, object]] = []
-
-    if task_id is None:
-        # latest entry per challenge_id
-        latest_by_id: dict[int, Mapping[str, object]] = {}
-        for e in entries:
-            cid = e.get("challenge_id")
-            if not isinstance(cid, int):
-                continue
-            prev = latest_by_id.get(cid)
-            if not prev or float(e.get("timestamp") or 0) >= float(prev.get("timestamp") or 0):
-                latest_by_id[cid] = e
-
-        for cid, e in sorted(latest_by_id.items(), key=lambda kv: str(kv[1].get("task") or "")):
-            status = str(e.get("status") or "done")
-            ts = float(e.get("timestamp") or 0)
-            has_flag = bool(e.get("flag"))
-
-            item: dict[str, object] = {
-                "task": str(e.get("task") or ""),
-                "challenge_id": cid,
-                "status": status,
-                "timestamp": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
-                "detail_href": f"/task/{cid}",
-                "error": str(e.get("error") or ""),
-            }
-
-            # --- SOLVED ---
-            if status == "done":
-                solved.append({**item, "status": "solved"})
-                continue
-
-            # --- QUEUED ---
-            if status == "queued":
-                queue.append(item)
-                continue
-
-            # --- RUNNING ---
-            if status == "running":
-                last_update = _log_last_update_ts(item["task"])
-                log_stale = (
-                    last_update is not None
-                    and (now - last_update) > RUNNING_LOG_STALE_SECONDS
-                )
-                if log_stale or (now - ts) > STALE_RUNNING_SECONDS:
-                    failed.append(
-                        {
-                            **item,
-                            "status": "stalled",
-                            "error": item["error"] or "no recent log updates",
-                        }
-                    )
-                else:
-                    running.append(item)
-                continue
-
-            # --- FAILED ---
-            failed.append(
-                {
-                    **item,
-                    "status": status,
-                    "error": item["error"],
-                }
-            )
+    # --- Budgets ---
+    budgets = {  # TODO
+        "tokens_5h": 0,
+        "limit_5h": TOKEN_LIMIT_5H,
+        "tokens_week": 0,
+        "limit_week": TOKEN_LIMIT_WEEK,
+    }
 
     # --- Cards (task detail page only) ---
-    cards: list[Mapping[str, object]] = []
-    if task_id is not None and filtered:
-        best = max(
-            filtered,
-            key=lambda e: float(e.get("timestamp") or 0),
-            default=None,
-        )
+    cards: dict[str, list[Task]] = {
+        "queued": [],
+        "running": [],
+        "solved": [],
+        "failed": [],
+    }
+    for task in entries:
+        cards[task.status].append(task)
 
-        if best:
-            task_name = str(best.get("task") or "")
-            status = str(best.get("status") or "done")
-
-            thinking_text = load_task_thinking(task_name) or str(best.get("thinking") or "")
-            if status == "running" and not thinking_text.strip():
-                live = load_task_live_output(task_name)
-                if live:
-                    thinking_text = extract_thinking_from_stream(live)
-
-            ts = datetime.fromtimestamp(best.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
-
-            cards.append(
-                {
-                    "id": "task-0",
-                    "task": task_name,
-                    "challenge_id": best.get("challenge_id"),
-                    "timestamp": ts,
-                    "flag": best.get("flag") or "",
-                    "tokens": best.get("tokens_used") or "",
-                    "status": status,
-                    "thinking": thinking_text,
-                    "thinking_html": format_thinking_html(thinking_text),
-                    "detail_href": f"/task/{best.get('challenge_id')}",
-                }
-            )
-
-    # --- Empty text ---
-    task_name = ""
-    if task_id is not None and filtered:
-        task_name = str(filtered[-1].get("task") or "")
-
-    empty_text = (
-        "No runs yet."
-        if task_id is None
-        else "No runs for this task yet."
-    )
-    print([title, task_name])
     return {
-        "title": title,
-        "task_id": task_id,
-        "task_name": task_name,
-        "summary": summary,
-        "budgets": budgets,
-        "latest_status": latest_status,
-        "queue": queue,
-        "running": running,
-        "solved": solved,
-        "failed": failed,
-        "cards": cards,
-        "empty_text": empty_text,
+        "title":    "AI-Team Stats",
+        "tokens":   tokens,
+        "budgets":  budgets,
+        "cards":    cards,
+        "runs":     0,
+        "flags":    0,
     }
 
 
 @app.route("/", methods=["GET"])
 @app.route("/index.html", methods=["GET"])
 def index() -> Response:
-    entries = load_entries()
-    context = build_view_model(entries)
+    context = stats_view_model()
     html = render_template("stats.html", **context)
     return Response(html, mimetype="text/html")
 
 
 @app.route("/task/<int:task_id>", methods=["GET"])
 def task_detail(task_id: int) -> Response:
-    entries = load_entries()
-    context = build_view_model(entries, task_id=task_id)
+    context = task_view_model(task_id)
     html = render_template("detail.html", **context)
     return Response(html, mimetype="text/html")
 
 
 @app.route("/api/task/<int:task_id>/thinking", methods=["GET"])
 def task_thinking_api(task_id: int) -> Response:
-    entries = load_entries()
-    relevant = [e for e in entries if e.get("challenge_id") == task_id]
+    entries = stats_db.read_entries(DB_PATH) 
+    relevant = [e for e in entries if e.id == task_id]
     latest = relevant[-1] if relevant else {}
     task_name = str(latest.get("task") or "")
     status = str(latest.get("status") or "done")
@@ -720,7 +284,7 @@ def task_thinking_api(task_id: int) -> Response:
     if status == "running" and not thinking_text.strip():
         live = load_task_live_output(task_name)
         if live:
-            thinking_text = extract_thinking_from_stream(live)
+            thinking_text = live
     return jsonify(
         {
             "task_id": task_id,
@@ -730,9 +294,10 @@ def task_thinking_api(task_id: int) -> Response:
         }
     )
 
+
 def _thinking_payload(task_id: int) -> dict[str, object]:
-    entries = load_entries()
-    relevant = [e for e in entries if e.get("challenge_id") == task_id]
+    entries = stats_db.read_entries(DB_PATH)
+    relevant = [e for e in entries if e.id == task_id]
     latest = relevant[-1] if relevant else {}
     task_name = str(latest.get("task") or "")
     status = str(latest.get("status") or "done")
@@ -740,7 +305,7 @@ def _thinking_payload(task_id: int) -> dict[str, object]:
     if status == "running" and not thinking_text.strip():
         live = load_task_live_output(task_name)
         if live:
-            thinking_text = extract_thinking_from_stream(live)
+            thinking_text = live
     return {
         "task_id": task_id,
         "task": task_name,
@@ -772,9 +337,10 @@ def task_message(task_id: int) -> Response:
     if not message:
         return jsonify({"error": "missing message"}), 400
 
-    task_dir = find_task_dir_by_id(task_id)
-    if not task_dir:
+    task = stats_db.get_entry(DB_PATH, task_id)
+    if not task:
         return jsonify({"error": "task not found"}), 404
+    task_dir = TASKS_ROOT / task
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context_path = task_dir / "codex_context.txt"
@@ -795,21 +361,11 @@ def task_message(task_id: int) -> Response:
     return jsonify({"status": "ok"})
 
 
-@app.route("/task/<task_name>", methods=["GET"])
-def task_name_redirect(task_name: str) -> Response:
-    entries = load_entries()
-    for e in reversed(entries):
-        if e.get("task") == task_name and isinstance(e.get("challenge_id"), int):
-            return redirect(url_for("task_detail", task_id=e["challenge_id"]))
-    return redirect(url_for("index"))
-
-
 if __name__ == "__main__":
-    print(f"Serving Codex stats on http://localhost:{PORT} (source: {STATS_PATH})")
-    # Use a WS-capable server so flask-sock endpoints work.
+    print(f"Serving Codex stats on http://localhost:{PORT} (source: {DB_PATH})")
     try:
-        from gevent import pywsgi  # type: ignore
-        from geventwebsocket.handler import WebSocketHandler  # type: ignore
+        from gevent import pywsgi
+        from geventwebsocket.handler import WebSocketHandler
     except Exception:
         app.run(host="0.0.0.0", port=PORT, debug=False)
     else:
