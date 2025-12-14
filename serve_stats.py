@@ -476,13 +476,7 @@ def mark_attempted_without_success(entries: List[Mapping[str, object]], now_ts: 
     return out
 
 def _log_last_update_ts(task_name: str) -> Optional[float]:
-    candidates = [
-        THINKING_LOGS_DIR / task_name / "codex_output.raw.log",
-        THINKING_LOGS_DIR / task_name / "codex_output.log",
-        THINKING_LOGS_DIR / task_name / "thinking.log",
-        TASKS_ROOT / task_name / "codex_output.log",
-        TASKS_ROOT / task_name / "thinking.log",
-    ]
+    candidates = [THINKING_LOGS_DIR / task_name / "thinking.log"]
     for path in candidates:
         try:
             if path.exists():
@@ -597,12 +591,9 @@ def build_view_model(
                 "error": str(e.get("error") or ""),
             }
 
-            if status == "hidden":
-                continue
-
             # --- SOLVED ---
-            if has_flag or status == "solved":
-                solved.append({**item, "status": "solved", "error": ""})
+            if status == "done":
+                solved.append({**item, "status": "solved"})
                 continue
 
             # --- QUEUED ---
@@ -629,12 +620,12 @@ def build_view_model(
                     running.append(item)
                 continue
 
-            # --- FAILED / DONE WITHOUT FLAG ---
+            # --- FAILED ---
             failed.append(
                 {
                     **item,
                     "status": status,
-                    "error": item["error"] or "no flag",
+                    "error": item["error"],
                 }
             )
 
@@ -684,7 +675,7 @@ def build_view_model(
         if task_id is None
         else "No runs for this task yet."
     )
-
+    print([title, task_name])
     return {
         "title": title,
         "task_id": task_id,
