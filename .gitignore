@@ -1,8 +1,9 @@
-codex_stats.db
-thinking_logs
+*.db
+codex
 .cache
 __pycache__
 .codex
 tasks
+logs
 .venv
 .env

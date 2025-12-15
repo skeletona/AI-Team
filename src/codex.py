@@ -52,7 +52,7 @@ def extract_tokens(output: str = "", task: Task = None) -> int:
     if output:
         clean = strip_ansi(output)
     elif task:
-        log_path = LOGS_DIR / task.name / "thinking.log"
+        log_path = CODEX_DIR / task.name / "thinking.log"
         try:
             with open(log_path, "r", encoding="utf-8") as f:
                 clean = strip_ansi(f.read())
@@ -85,7 +85,7 @@ def extract_thinking(output: str) -> str:
 
 def persist_task_logs(task: Task, output: str) -> None:
     try:
-        logs_root = THINKING_LOGS_DIR / task.name
+        logs_root = CODEX_DIR / task.name
         logs_root.mkdir(parents=True, exist_ok=True)
         (logs_root / "thinking.log").write_text(extract_thinking(output), encoding="utf-8")
     except OSError as exc:
@@ -96,7 +96,7 @@ def run_codex_with_logs(
     command: list[str],
     task: Task,
 ) -> str:
-    logs_root = THINKING_LOGS_DIR / task.name
+    logs_root = CODEX_DIR / task.name
     logs_root.mkdir(parents=True, exist_ok=True)
 
     output_log = logs_root / "thinking.log"
@@ -220,7 +220,7 @@ def process_task(task: Task) -> int:
         )
 
     logging.warning(f"max attempts reached for {task.name}")
-    db.insert_entry(task.id, "stopped", tokens=extract_tokens(output=last_output), error="max attempts reached")
+    db.insert_entry(task.id, "failed", tokens=extract_tokens(output=last_output), error="max attempts reached")
     return 0
 
 
@@ -275,3 +275,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

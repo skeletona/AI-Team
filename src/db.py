@@ -84,6 +84,10 @@ def insert_entry(
     tokens: int | None  = 0,
     error:  str | None  = None,
 ) -> None:
+    if status not in ("queued", "running", "solved", "failed"):
+        logging.error("Invalid task status insertion:", status)
+        return
+
     ensure_tasks_db(DB_PATH)
     if tokens is None:
         tokens = 0

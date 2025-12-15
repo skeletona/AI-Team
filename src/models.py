@@ -25,7 +25,8 @@ TEAM_NAME = os.environ.get("AI_TEAM_NAME")
 
 DB_PATH = Path(os.environ.get("DB_PATH", "tasks.db"))
 TASKS_DIR = Path(os.environ.get("TASKS_ROOT", "tasks"))
-LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "logs"))
+CODEX_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "codex"))
+LOGS_DIR = Path(os.environ.get("LOGS_DIR", "logs"))
 
 MAX_ATTACHMENT_BYTES = int(os.environ.get("MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
 TARGET_POINTS = int(os.environ.get("TARGET_POINTS"))
@@ -38,14 +39,15 @@ MAX_CODEX_WORKERS = int(os.environ.get("MAX_CODEX_WORKERS"))
 FLAG_FORMAT = os.environ.get("FLAG_FORMAT")
 FLAG_REGEX = os.environ.get("FLAG_REGEX")
 
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = os.environ.get("PORT", 8000)
+DEBUG_FLASK = os.environ.get("DEBUG_FLASK", False)
+
 _SOLVED_CACHE: dict[str, object] = {"ts": 0.0, "ids": set()}
 SOLVED_CACHE_SECONDS = int(os.environ.get("SOLVED_CACHE_SECONDS", "30"))
 DEFAULT_CODEX_COMMAND = ["codex", "exec", "-s", "danger-full-access", "-m", "gpt-5.1-codex-mini", "--skip-git-repo-check"]
 STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
 STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
-THINKING_LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
-STALE_RUNNING_SECONDS = int(os.environ.get("STALE_RUNNING_SECONDS", "900"))
-RUNNING_LOG_STALE_SECONDS = int(os.environ.get("RUNNING_LOG_STALE_SECONDS", "45"))
 SOLVES_CACHE_SECONDS = int(os.environ.get("SOLVES_CACHE_SECONDS", "30"))
 CHALLENGES_CACHE_SECONDS = int(os.environ.get("CHALLENGES_CACHE_SECONDS", "60"))
 

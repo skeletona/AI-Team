@@ -62,7 +62,7 @@ def summarize_thinking(text: str) -> str:
 
 def main():
     tasks_root = Path(TASKS_DIR)
-    logs_root = Path(LOGS_DIR)
+    logs_root = Path(CODEX_DIR)
     if not tasks_root.exists():
         return 0
     for task_dir in sorted(p for p in tasks_root.iterdir() if p.is_dir()):

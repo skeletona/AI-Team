@@ -5,3 +5,4 @@ flask-sock
 gevent
 gevent-websocket
 typer
+subprocess

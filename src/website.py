@@ -12,21 +12,19 @@ from __future__ import annotations
 import json
 import hashlib
 import re
-import shlex
-import subprocess
-from datetime import datetime
 from html import escape
 from typing import List, Mapping, Optional
-from urllib.parse import urljoin
 
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request
 from flask_sock import Sock
-import requests
 
 from src.models import *
 from . import db
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
+sock = Sock(app)
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text or "")
@@ -47,48 +45,6 @@ def _percent_left(used: int, limit: int) -> int:
         return 100
     ratio = min(max(used / limit, 0.0), 1.0)
     return int(round((1.0 - ratio) * 100))
-
-
-def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
-    if not CODEX_BUDGET_COMMAND:
-        return None
-    try:
-        if (now_ts - float(_BUDGET_CACHE.get("ts") or 0.0)) <= _BUDGET_CACHE_TTL_SECONDS:
-            cached = _BUDGET_CACHE.get("lines")
-            if isinstance(cached, list) and all(isinstance(x, str) for x in cached):
-                return list(cached)
-    except Exception:
-        pass
-    try:
-        cmd = shlex.split(CODEX_BUDGET_COMMAND)
-    except ValueError:
-        return None
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    raw_lines = [ln.rstrip("\n") for ln in (proc.stdout or "").splitlines()]
-    wanted: List[str] = []
-    prefixes = ("Context window:", "5h limit:", "Weekly limit:")
-    for line in raw_lines:
-        stripped = line.strip()
-        if any(stripped.startswith(prefix) for prefix in prefixes):
-            wanted.append(stripped)
-    if not wanted:
-        return None
-    _BUDGET_CACHE["ts"] = now_ts
-    _BUDGET_CACHE["lines"] = wanted
-    return wanted
-
-app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
-sock = Sock(app)
 
 
 def format_thinking_html(text: str) -> str:
@@ -143,7 +99,7 @@ def format_thinking_html(text: str) -> str:
 
 
 def load_task_thinking(task: Task) -> Optional[str]:
-    path = THINKING_LOGS_DIR / task.name / "thinking.log"
+    path = CODEX_DIR / task.name / "thinking.log"
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -157,8 +113,8 @@ def load_task_thinking(task: Task) -> Optional[str]:
 def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[str]:
     if not task_name:
         return None
-    preferred = THINKING_LOGS_DIR / task_name / "codex_output.log"
-    legacy = TASKS_ROOT / task_name / "codex_output.log"
+    preferred = CODEX_DIR / task_name / "codex_output.log"
+    legacy = TASKS_DIR / task_name / "codex_output.log"
     path = preferred if preferred.exists() else legacy
     try:
         if not path.exists():
@@ -176,7 +132,7 @@ def load_task_live_output(task_name: str, max_bytes: int = 200_000) -> Optional[
 
 
 def _log_last_update_ts(task_name: str) -> Optional[float]:
-    candidates = [THINKING_LOGS_DIR / task_name / "thinking.log"]
+    candidates = [CODEX_DIR / task_name / "thinking.log"]
     for path in candidates:
         try:
             if path.exists():
@@ -286,8 +242,8 @@ def _thinking_payload(task_id: int) -> dict[str, object]:
     }
 
 
-@sock.route("/ws/task/<int:task_id>/thinking")
-def task_thinking_ws(ws, task_id: int) -> None:
+@sock.route("/task/<int:task_id>/logs")
+def task_thinking_ws(ws, task_id: int):
     last_hash = ""
     while True:
         payload = _thinking_payload(task_id)
@@ -312,9 +268,9 @@ def task_message(task_id: int) -> Response:
     task = db.get_entry(DB_PATH, task_id)
     if not task:
         return jsonify({"error": "task not found"}), 404
-    task_dir = TASKS_ROOT / task
+    task_dir = TASKS_DIR / task
 
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = time().strftime("%Y-%m-%d %H:%M:%S")
     context_path = task_dir / "codex_context.txt"
     note = f"[Operator note {ts}]\n{message}\n\n"
     try:
@@ -326,7 +282,7 @@ def task_message(task_id: int) -> Response:
     except Exception as exc:
         return jsonify({"error": f"failed to write context: {exc}"}), 500
 
-    stop_flag = THINKING_LOGS_DIR / task_dir.name / "stop.flag"
+    stop_flag = CODEX_DIR / task_dir.name / "stop.flag"
     stop_flag.parent.mkdir(parents=True, exist_ok=True)
     stop_flag.write_text(message, encoding="utf-8")
 
@@ -334,15 +290,8 @@ def task_message(task_id: int) -> Response:
 
 
 def main():
-    print(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
-    try:
-        from gevent import pywsgi
-        from geventwebsocket.handler import WebSocketHandler
-    except Exception:
-        app.run(host=HOST, port=PORT)
-    else:
-        server = pywsgi.WSGIServer((HOST, PORT), app, handler_class=WebSocketHandler)
-        server.serve_forever()
+    logging.info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
+    app.run(host=HOST, port=PORT, debug=DEBUG_FLASK, use_reloader=False)
 
 
 if __name__ == "__main__":
