@@ -4,3 +4,4 @@ flask
 flask-sock
 gevent
 gevent-websocket
+typer

@@ -86,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def summarize_logs_main():
     raise SystemExit(main())
+
+
+if __name__ == "__main__":
+    summarize_logs_main()
 

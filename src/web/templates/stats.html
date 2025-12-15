@@ -19,7 +19,7 @@
     <main class="page-shell">
       <header class="hero">
         <div class="hero-copy">
-          <h1>AI Team overview</h1>
+          <h1>AI Team dashboard</h1>
         </div>
       </header>
 
@@ -45,7 +45,6 @@
         <article class="budget-card">
           <header>
             <h2>Budget Watch</h2>
-            <p class="hint">API limits + context window</p>
           </header>
           {% if budgets.lines %}
             <div class="budget-lines">
@@ -102,8 +101,8 @@
                 <div class="status-item" data-status="{{ item.status | lower }}">
                   <div class="status-top-row">
                     <div>
-                      <p class="task-name">{{ item.task or "Mysterious Task" }}</p>
-                      {% if item.challenge_id is not none and item.challenge_id != "" %}
+                      <p class="task-name">{{ item.name }}</p>
+                      {% if item.challenge_id is not none and item.id != "" %}
                         <p class="task-hash">#{{ item.challenge_id }}</p>
                       {% endif %}
                     </div>

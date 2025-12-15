@@ -34,6 +34,7 @@ import stats_db
 DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
 STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
+HOST = os.environ.get("STATS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STATS_PORT", "8000"))
 TASKS_ROOT = Path(os.environ.get("TASKS_ROOT", "tasks"))
 THINKING_LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
@@ -361,13 +362,17 @@ def task_message(task_id: int) -> Response:
     return jsonify({"status": "ok"})
 
 
-if __name__ == "__main__":
-    print(f"Serving Codex stats on http://localhost:{PORT} (source: {DB_PATH})")
+def serve_stats_main():
+    print(f"Serving Codex stats on http://{HOST}:{PORT} (source: {DB_PATH})")
     try:
         from gevent import pywsgi
         from geventwebsocket.handler import WebSocketHandler
     except Exception:
-        app.run(host="0.0.0.0", port=PORT, debug=False)
+        app.run(host=HOST, port=PORT, debug=False)
     else:
-        server = pywsgi.WSGIServer(("0.0.0.0", PORT), app, handler_class=WebSocketHandler)
+        server = pywsgi.WSGIServer((HOST, PORT), app, handler_class=WebSocketHandler)
         server.serve_forever()
+
+
+if __name__ == "__main__":
+    serve_stats_main()

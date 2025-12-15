@@ -262,5 +262,9 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def extract_tasks_main():
     raise SystemExit(main())
+
+
+if __name__ == "__main__":
+    extract_tasks_main()

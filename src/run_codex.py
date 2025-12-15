@@ -45,6 +45,18 @@ RUNNING_CODEX: dict[int, subprocess.Popen] = {}
 STOP_EVENT = threading.Event()
 
 
+flag_regex: re.Pattern[str]
+
+
+def run_codex_main():
+    global flag_regex
+    flag_regex = build_flag_regex()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
+    
+    stats_db.move_status(DB_PATH, "running", "failed")
+    run_tasks()
+
+
 def kill_all_codex():
     for task_id, proc in list(RUNNING_CODEX.items()):
         proc.kill()
@@ -315,9 +327,4 @@ def run_tasks() -> int:
         logging.info("All done!")
 
 if __name__ == "__main__":
-    global flag_regex
-    flag_regex = build_flag_regex()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
-    
-    stats_db.move_status(DB_PATH, "running", "failed")
-    run_tasks()
+    run_codex_main()
