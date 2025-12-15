@@ -121,11 +121,12 @@ def attach(
     for name in services:
         if name not in PROCS:
             typer.echo(f"{name} not running!".capitalize())
-            tail_f(PROCS[name].log)
+        else:
+            tail_f(PROCS[name]["log"])
 
 
 @app.command("stop")
-def run(
+def stop(
     services: list[str] = typer.Argument(
         None,
         help="What to stop: website codex (default: all)",
@@ -142,6 +143,39 @@ def run(
         stop_background("website")
     if "codex" in services:
         stop_background("codex")
+
+
+@app.command("restart")
+def restart(
+    services: list[str] = typer.Argument(
+        None,
+        help="What to restart: website codex (default: all)",
+    ),
+    attach_lst: list[str] = typer.Option(
+        [],
+        "--attach",
+        "-a",
+        help="What to attach to: website codex",
+    ),
+):
+    """
+    Restart AI-Team
+    """
+
+    if not services:
+        services = ["website", "codex"]
+
+    if "website" in services:
+        stop_background("website")
+        if "website" in PROCS:
+            del PROCS["website"]
+        start_background(name="website", log="flask.log", attach="website" in attach_lst)
+    if "codex" in services:
+        stop_background("codex")
+        if "codex" in PROCS:
+            del PROCS["codex"]
+        start_background(name="codex", attach="codex" in attach_lst)
+
 
 
 @app.command("clean")
@@ -247,7 +281,7 @@ def stop_background(name: str) -> None:
 
     try:
         os.kill(proc.pid, signal.SIGTERM)
-        typer.echo(f"Sent SIGTERM to {name} (pid={proc.pid})")
+        typer.echo(f"Stopping {name}")
 
         waited = 0
         while waited < GRACE_TIME:
@@ -288,13 +322,13 @@ def change_json(proc: Process, delete: bool = False) -> none:
         json.dump(data, json_file, indent=2)
 
 
-def tail_f(path: str, sleep: float = 0.5):
+def tail_f(path: str, sleep_time: float = 0.5):
     with open(path, "r", encoding="utf-8") as f:
         f.seek(0, 2)
         while True:
             line = f.readline()
             if not line:
-                time.sleep(sleep)
+                sleep(sleep_time)
                 continue
             print(line, end="")
 
