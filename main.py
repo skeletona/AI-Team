@@ -6,6 +6,7 @@ try:
     from typing import Optional
     import subprocess
     import shutil
+    import json
     import sys
     import typer
     import signal
@@ -16,6 +17,9 @@ except ModuleNotFoundError as e:
 
 
 ROOT = Path(__file__).resolve().parent
+RUNNING_FILE = LOGS_DIR / "running.json"
+PROCS = dict()
+GRACE_TIME = 5
 
 path = os.environ.get("PATH", "")
 if ROOT not in path.split(os.pathsep):
@@ -27,117 +31,152 @@ app = typer.Typer(help = "AI-Team",
                   pretty_exceptions_enable=True,
                   pretty_exceptions_short=True,)
 
-website_app = typer.Typer(help="Website", no_args_is_help = True)
-app.add_typer(website_app, name="website")
-codex_app = typer.Typer(help="Codex", no_args_is_help = True)
-app.add_typer(codex_app, name="codex")
+@dataclass
+class Process:
+    name:       str
+    pid:        int
+    log:        Path
+
+
+def read_json() -> dict:
+    if RUNNING_FILE.exists():
+        return json.loads(RUNNING_FILE.read_text(encoding="utf-8"))
+    else:
+        return dict()
+
 
 @app.command("run")
 def run(
-    clean_tasks: bool = typer.Option(False,     "--clean-tasks",    help="Clean tasks before run"),
-    clean_codex: bool = typer.Option(False,      "--clean-codex",     help="Clean codex thoughts before run"),
-    clean_logs: bool = typer.Option(False,      "--clean-logs",     help="Clean logs  before run"),
-    clean_database: bool = typer.Option(False,  "--clean-stats",    help="Clean database before run"),
-    no_download: bool = typer.Option(False,     "--no-download",    help="No downloading"),
-    no_website: bool = typer.Option(False,      "--no-website",     help="No website"),
-    no_codex: bool = typer.Option(False,        "--no-codex",       help="No Codex"),
-    attach_website: bool = typer.Option(False,  "--attach_website", "-aw", help="Attach to website"),
-    attach_codex: bool = typer.Option(False,    "--attach_codex",   "-ac", help="Attach to codex"),
+    services: list[str] = typer.Argument(
+        None,
+        help="What to run: download website codex (default: all)",
+    ),
+    clean_lst: list[str] = typer.Option(
+        None,
+        "--clean",
+        "-c",
+        help="What to clean before run: tasks codex logs database all",
+    ),
+    attach_lst: list[str] = typer.Option(
+        [],
+        "--attach",
+        "-a",
+        help="What to attach to: website codex",
+    ),
 ):
     """
     Run AI-Team
     """
-    if clean_tasks:
-        run_clean(tasks=True)
-    if clean_codex:
-        run_clean(codex=True)
-    if clean_logs:
-        run_clean(logs=True)
-    if clean_database:
-        run_clean(database=True)
+    if clean:
+        clean(clean_lst)
 
-    if not no_download:
-        run_download()
-    if not no_website:
-        start_website(attach_website)
-    if not no_codex:
-        start_codex(attach_codex)
+    if not services:
+        services = ["download", "website", "codex"]
 
-
-@app.command("download")
-def run_download():
-    """
-    Only Download
-    """
-    typer.echo("Downloading tasks …")
-    if download.main() != 0:
-        raise typer.Exit(code=1)
-        typer.echo("[download] done")
+    if "download" in services:
+        typer.echo("Downloading tasks …")
+        if download.main() != 0:
+            raise typer.Exit(code=1)
+            typer.echo("download done")
+    if "website" in services:
+        start_background(name="website", log="flask.log", attach="website" in attach_lst)
+    if "codex" in services:
+        start_background(name="codex", attach="codex" in attach_lst)
 
 
-@codex_app.command("start")
-def start_codex(
-        attach: bool = typer.Option(False, "--attach", "-a", help="Attach to Codex runner logs"),
+@app.command("status")
+def status(
+    services: list[str] = typer.Argument(
+        None,
+        help="Services to show status for (e.g. website codex)",
+    )
 ):
     """
-        Start Codex runner
+    Show status of services
     """
-    start_background(["-m", "src.codex"], name="codex", attach=attach)
+    if not services:
+        services = ["codex", "website"]
 
-
-@codex_app.command("stop")
-def stop_codex():
-    """
-        Stop Codex runner
-    """
-    stop_backgroud(name="codex")
-
-
-@website_app.command("start")
-def start_website(
-        attach: bool = typer.Option(False, "--attach", "-a", help="Attach to flask logs"),
-):
-    """
-        Start website
-    """
-    start_background(["-m", "src.website"], name="website", log="flask.log", attach=attach)
     
+    for name in services:
+        if name not in PROCS:
+            typer.echo(f"{name}: not running".capitalize())
+        else:
+            typer.echo(f"{name}: running in background".capitalize())
 
-@website_app.command("stop")
-def stop_website(
+
+@app.command("attach")
+def attach(
+    services: list[str] = typer.Argument(
+        None,
+        help="Services to show status for (e.g. website codex)",
+    )
 ):
     """
-        Stop website
+    Attach to service
     """
-    
-    stop_background(name="website")
+    if not services:
+        services = ["codex", "website"]
+
+    for name in services:
+        if name not in PROCS:
+            typer.echo(f"{name} not running!".capitalize())
+            tail_f(PROCS[name].log)
 
 
-@app.command("clean", no_args_is_help=True)
-def run_clean(
-    all: bool = typer.Option(False, "--all", "-a", help="Clean all"),
-    tasks: bool = typer.Option(False, "--tasks", help="Clean tasks folder"),
-    codex: bool = typer.Option(False, "--codex", help="Clean codex thoughts"),
-    logs: bool = typer.Option(False, "--logs", help="Clean logs"),
-    database: bool = typer.Option(False, "--database", help="Clean Database"),
+@app.command("stop")
+def run(
+    services: list[str] = typer.Argument(
+        None,
+        help="What to stop: website codex (default: all)",
+    ),
+):
+    """
+    Stop AI-Team
+    """
+
+    if not services:
+        services = ["website", "codex"]
+
+    if "website" in services:
+        stop_background("website")
+    if "codex" in services:
+        stop_background("codex")
+
+
+@app.command("clean")
+def clean(
+    things: list[str] = typer.Argument(
+        None,
+        help="What to clean: tasks codex logs database (default: all)",
+    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
         Cleaning
     """
-    if tasks or all:
-        shutil.rmtree(TASKS_DIR, ignore_errors=True)
+    if not things:
+        return
+
+    if "all" in things:
+        if not force:
+            confirm = input("Are you sure you want to DELETE ALL? [Y/N]: ")
+            if confirm.lower() not in ["yes", "y"]:
+                typer.echo("Did not confirm. Be careful!")
+                return
+        things = ["tasks", "codex", "logs", "database"]
+
+    if "tasks" in things:
+        shutil.rmtree(TASKS_DIR)
         typer.echo(f"Deleted tasks directory: {TASKS_DIR}")
-
-    if logs or all:
-        shutil.rmtree(LOGS_DIR, ignore_errors=True)
+    if "codex" in things:
+        shutil.rmtree(CODEX_DIR)
+        typer.echo(f"Deleted codex directory: {CODEX_DIR}")
+    if "logs" in things:
+        shutil.rmtree(LOGS_DIR)
         typer.echo(f"Deleted logs directory: {LOGS_DIR}")
-
-    if database or all:
-        try:
-            os.remove(DB_PATH)
-            typer.echo(f"Deleted: {DB_PATH}")
-        except Exception as e:
-            typer.echo(f"Error: {e}")
+    if "database" in "all":
+        typer.echo(f"Deleted: {DB_PATH}")
 
 
 @app.command("summarize")
@@ -155,7 +194,7 @@ def summarize():
         typer.echo("[summarize] done")
 
 
-def start_background(command: list, name: str, log: str = "", attach: bool = False) -> int:
+def start_background(name: str, log: str = "", attach: bool = False) -> int:
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     if log:
@@ -163,23 +202,22 @@ def start_background(command: list, name: str, log: str = "", attach: bool = Fal
     else:
         log_path = LOGS_DIR / f"{name}.log"
 
-    pid_file = LOGS_DIR / Path(name + ".pid")
-
-    if pid_file.exists():
-        typer.echo(f"{name} is already running".capitalize())
+    if name in PROCS:
+        typer.echo(f"{name} already running".capitalize())
         return 0
 
     if attach:
-        typer.echo("Attaching to " + name)
+        typer.echo("Attaching to {name} …")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [sys.executable] + command,
+                [sys.executable, "-m", "src." + name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
                 start_new_session=True,
             )
+            change_json(Process(name=name, log=str(log_path), pid=p.pid))
             with p.stdout:
                 for line in p.stdout:
                     f.write(line)
@@ -187,44 +225,80 @@ def start_background(command: list, name: str, log: str = "", attach: bool = Fal
                     typer.echo(line, nl=False)
             p.wait()
     else:
+        typer.echo(f"Starting {name} …")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [sys.executable] + command,
+                [sys.executable, "-m", "src." + name],
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-
-    with pid_file.open("w") as f_pid:
-        f_pid.write(str(p.pid))
-
-    typer.echo(f"{name} started in background.".capitalize())
+        change_json(Process(name=name, log=str(log_path), pid=p.pid))
+        typer.echo(f"{name} started in background.".capitalize())
     return 0
 
 
 def stop_background(name: str) -> None:
-    pid_file = LOGS_DIR / name
-    if pid_file.exists():
-        with open(pid_file, "r") as f_pid:
-            pid = int(f_pid.read())
+    if name not in PROCS:
+        typer.echo(f"{name} not running!")
+        return
 
-        try:
-            os.killpg(pid, signal.SIGTERM)
-            pid_file.unlink()
-            typer.echo(f"{name} stopped".capitalize())
-        except ProcessLookupError:
-            typer.echo(f"No {name} process found")
-            pid_file.unlink()
-        except Exception as e:
-            typer.echo(f"Error stopping {name}: {e}")
-            raise typer.Exit(code=1)
+    proc = Process(**PROCS[name])
+
+    try:
+        os.kill(proc.pid, signal.SIGTERM)
+        typer.echo(f"Sent SIGTERM to {name} (pid={proc.pid})")
+
+        waited = 0
+        while waited < GRACE_TIME:
+            try:
+                os.kill(proc.pid, 0)
+            except ProcessLookupError:
+                typer.echo(f"{name} stopped".capitalize())
+                return
+            sleep(0.5)
+            waited += 0.5
+
+        typer.echo(f"{name} did not exit gracefully in {GRACE_TIME} seconds. Killing.")
+        os.kill(proc.pid, signal.SIGKILL)
+
+    except ProcessLookupError:
+        typer.echo(f"No {name} process found")
+    except Exception as e:
+        typer.echo(f"Error stopping {name}: {e}")
+        raise typer.Exit(code=1)
+    finally:
+        change_json(proc, delete=True)
+
+
+def change_json(proc: Process, delete: bool = False) -> none:
+    if not RUNNING_FILE.exists():
+        with open(RUNNING_FILE, "w") as json_file:
+            json.dump({"sus": "sas"}, json_file, indent=2)
+        data: dict[str, Process] = {}
     else:
-        typer.echo(f"{name} is not running!".capitalize())
+        data = json.loads(RUNNING_FILE.read_text(encoding="utf-8"))
+
+    if delete:
+        del data[proc.name]
+    else:
+        data[proc.name] = asdict(proc)
+
+    with open(RUNNING_FILE, "w") as json_file:
+        json.dump(data, json_file, indent=2)
 
 
-def main() -> None:
-    app()
+def tail_f(path: str, sleep: float = 0.5):
+    with open(path, "r", encoding="utf-8") as f:
+        f.seek(0, 2)
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(sleep)
+                continue
+            print(line, end="")
 
 
 if __name__ == "__main__":
-    main()
+    PROCS = read_json()
+    app()

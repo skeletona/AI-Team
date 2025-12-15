@@ -13,6 +13,7 @@ from random import shuffle
 import re
 import subprocess
 import threading
+import signal
 from typing import Any, Mapping, Optional, Sequence
 import concurrent.futures
 
@@ -20,7 +21,7 @@ from src.models import *
 from . import db, ctfd
 
 STOP_EVENT = threading.Event()
-RUNNING_CODEX: dict = {int: subprocess.Popen}
+RUNNING_CODEX: dict[int: subprocess.Popen] = {}
 
 
 def build_flag_regex(flag_regex: str | None, flag_format: str) -> re.Pattern:
@@ -116,17 +117,16 @@ def run_codex_with_logs(
         try:
             proc.wait(timeout=timeout)
             completed_normally = True
-        except subprocess.TimeoutExpired:
+        except Excepion:
             completed_normally = False
         finally:
             if task.id is not None:
                 RUNNING_CODEX.pop(task.id, None)
 
     output = output_log.read_text(encoding="utf-8", errors="ignore")
-    if completed_normally:
-        tokens = extract_tokens(output=output)
-        if tokens is not None:
-            print(f"tokens used: {tokens}", flush=True)
+    tokens = extract_tokens(output=output)
+    if tokens:
+        logging.info(f"tokens used: {tokens}")
     return output
 
 
@@ -224,7 +224,7 @@ def process_task(task: Task) -> int:
     return 0
 
 
-def run_tasks() -> int:
+def run_tasks():
     if not TASKS_DIR.exists():
         logging.error(f"task directory does not exist: {TASKS_DIR}")
         return 1
@@ -253,23 +253,29 @@ def run_tasks() -> int:
             for f in done:
                 task = future_to_task.pop(f)
                 f.result()
-
     except KeyboardInterrupt:
-        print()
+        logging.info("Stopping signal recieved")
+    finally:
+        logging.info("Exiting")
         for fut, task in future_to_task.items():
             db.insert_entry(task.id, "failed", tokens=extract_tokens(task=task), error="interrupted")
             fut.cancel()
-        return
-    finally:
         STOP_EVENT.set()
+        for proc in RUNNING_CODEX.values():
+            proc.kill()
         executor.shutdown(wait=True)
-        logging.info("All done!")
+        logging.info("Exited")
+
+
+def handle_sigterm(signum, frame):
+    raise KeyboardInterrupt
 
 
 def main():
+    signal.signal(signal.SIGTERM, handle_sigterm)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
     db.move_status(DB_PATH, "running", "failed")
-    print("Starting Codex worker …")
+    logging.info("Starting Codex worker …")
     run_tasks()
 
 

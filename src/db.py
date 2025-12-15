@@ -113,6 +113,41 @@ def insert_entry(
         conn.execute(stmt, params)
 
 
+def create_entry(
+    id:     int,
+    status: str,
+    name:   str | None  = None,
+    flag:   str | None  = None,
+    tokens: int | None  = 0,
+    error:  str | None  = None,
+) -> None:
+    if status not in ("queued", "running", "solved", "failed"):
+        logging.error("Invalid task status insertion: %s", status)
+        return
+
+    ensure_tasks_db(DB_PATH)
+    if tokens is None:
+        tokens = 0
+
+    stmt = """
+        INSERT INTO tasks
+            (id, timestamp, name, status, flag, tokens, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+    """
+    params = (
+        id,
+        int(time()),
+        name,
+        status,
+        flag,
+        tokens,
+        error,
+    )
+    with _connect(DB_PATH) as conn:
+        conn.execute(stmt, params)
+
+
 def read_entries(path: Path) -> list[Task]:
     ensure_tasks_db(path)
     with _connect(path) as conn:

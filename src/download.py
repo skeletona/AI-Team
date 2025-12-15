@@ -102,7 +102,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             safe = sanitize_component(challenge.get("name"), str(challenge_id))
             print(f"[  skipped  ] {safe:<28} pts={TARGET_POINTS:<3} solved", flush=True)
 
-            db.insert_entry(challenge_id, "done", safe, flag="")
+            db.create_entry(challenge_id, "done", safe, flag="")
 
             continue
         detail = ctfd.fetch_challenge_detail(session, challenge_id)
@@ -113,9 +113,8 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
         folder = TASKS_DIR / safe_name
         existing_metadata_path = folder / "metadata.json"
         if existing_metadata_path.exists():
-            # Never delete "touched" folders: they may contain useful Codex context.
             print(f"[  skipped  ] {safe_name:<28} pts={TARGET_POINTS:<3} already downloaded", flush=True)
-            db.insert_entry(challenge_id, "queued", safe_name)
+            db.create_entry(challenge_id, "queued", safe_name)
             continue
 
         files = challenge.get("files") or []
@@ -134,7 +133,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             )
             continue
         persist_challenge_metadata(challenge, folder)
-        db.insert_entry(challenge_id, "queued", safe_name)
+        db.create_entry(challenge_id, "queued", safe_name)
         attachment_names: list[str] = []
         for attachment in challenge.get("files") or []:
             if isinstance(attachment, Mapping):
