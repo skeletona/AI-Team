@@ -1,17 +1,8 @@
-import os
-import logging
 import sqlite3
-from time import time
-from pathlib import Path
-from dotenv import load_dotenv
 
-from models import *
-
-load_dotenv()
+from src.models import *
 
 _INITIALIZED: set[str] = set()
-EXPECTED_COLUMNS = ["id", "timestamp", "name", "status", "flag", "tokens", "error"]
-DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(
@@ -24,7 +15,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 def _table_exists(conn: sqlite3.Connection) -> bool:
     row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='stats'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
     ).fetchone()
     return bool(row)
 
@@ -32,13 +23,13 @@ def _table_exists(conn: sqlite3.Connection) -> bool:
 def _create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS stats (
+        CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY,
             timestamp INTEGER NOT NULL,
             name TEXT,
             status TEXT,
             flag TEXT,
-            tokens INTEGER,
+            tokens INTEGER NOT NULL,
             error TEXT
         )
         """
@@ -46,7 +37,7 @@ def _create_table(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_index(conn: sqlite3.Connection) -> None:
-    conn.execute("CREATE INDEX IF NOT EXISTS stats_by_challenge ON stats(id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS tasks_by_challenge ON tasks(id)")
 
 
 def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -58,7 +49,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn):
         _create_table(conn)
     else:
-        existing = _column_names(conn, "stats")
+        existing = _column_names(conn, "tasks")
         if existing != EXPECTED_COLUMNS:
             logging.error("SQL schema is wrong:\nExpected: %s\nActual:   %s\n", EXPECTED_COLUMNS, existing)
     _ensure_index(conn)
@@ -75,7 +66,7 @@ def _to_int(value: object | None) -> int | None:
         return None
 
 
-def ensure_stats_db(path: Path) -> None:
+def ensure_tasks_db(path: Path) -> None:
     resolved = str(path.resolve())
     if resolved in _INITIALIZED:
         return
@@ -88,15 +79,17 @@ def ensure_stats_db(path: Path) -> None:
 def insert_entry(
     id:     int,
     status: str,
-    name:   str = "",
-    flag:   str = "",
-    tokens: int = 0,
-    error:  str = "",
+    name:   str | None  = None,
+    flag:   str | None  = None,
+    tokens: int | None  = 0,
+    error:  str | None  = None,
 ) -> None:
-    ensure_stats_db(DB_PATH)
+    ensure_tasks_db(DB_PATH)
+    if tokens is None:
+        tokens = 0
 
     stmt = """
-        INSERT INTO stats
+        INSERT INTO tasks
             (id, timestamp, name, status, flag, tokens, error)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
@@ -104,7 +97,7 @@ def insert_entry(
             name        = COALESCE(excluded.name, name),
             status      = excluded.status,
             flag        = excluded.flag,
-            tokens      = excluded.tokens,
+            tokens      = excluded.tokens + tokens,
             error       = excluded.error
     """
     params = (
@@ -117,10 +110,10 @@ def insert_entry(
 
 
 def read_entries(path: Path) -> list[Task]:
-    ensure_stats_db(path)
+    ensure_tasks_db(path)
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM stats").fetchall()
+        rows = conn.execute("SELECT * FROM tasks").fetchall()
     return [
         Task(
             timestamp=  row["timestamp"],
@@ -136,20 +129,20 @@ def read_entries(path: Path) -> list[Task]:
 
 
 def move_status(path: Path, old_status: str, new_status: str) -> None:
-    ensure_stats_db(path)
+    ensure_tasks_db(path)
     with _connect(path) as conn:
         conn.execute(
-            "UPDATE stats SET status = ? WHERE status = ?",
+            "UPDATE tasks SET status = ? WHERE status = ?",
             (new_status, old_status),
         )
         conn.commit()
 
 
 def get_entry(path: Path, id: int) -> Task | None:
-    ensure_stats_db(path)
+    ensure_tasks_db(path)
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
-        task = Task(**conn.execute("SELECT * FROM stats WHERE id = ?", (id,)).fetchone())
+        task = Task(**conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone())
     if task:
         return task
     else:

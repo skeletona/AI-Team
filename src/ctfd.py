@@ -1,27 +1,12 @@
 from typing import Any, Mapping, Optional, Sequence
-from dotenv import load_dotenv
 from urllib.parse import urljoin
-import logging
 import requests
-import os
 import re
 from time import time
 import threading
 
-load_dotenv()
+from src.models import *
 
-CTFD_URL = os.environ.get("CTFD_URL").rstrip("/")
-TEAM_NAME = os.environ.get("AI_TEAM_NAME")
-TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL")
-TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD")
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
-        " Chrome/120 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 SOLVED_LOCK = threading.Lock()
 _SOLVED_CACHE = {}
 SOLVED_CACHE_SECONDS = 60

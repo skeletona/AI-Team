@@ -2,79 +2,101 @@
 from __future__ import annotations
 
 try:
-    import os
-    import shutil
-    import signal
-    import sys
-    import time
-    from pathlib import Path
+    from src import *
     from typing import Optional
-    import multiprocessing
-
+    import shutil
+    import sys
     import typer
-    from dotenv import load_dotenv
+
 except ModuleNotFoundError as e:
     print("Run pip install -r requirements.txt\n")
     raise e
 
-from src.extract_tasks import main as extract_tasks_main
-from src.summarize_logs import main as summarize_logs_main
-from src.serve_stats import serve_stats_main
-from src.run_codex import run_codex_main
-
-load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
 
-app = typer.Typer(help="AI-Team helper: задачи, веб-интерфейс и Codex-воркеры")
-
-
-def terminate_process(proc: Optional[multiprocessing.Process], timeout: float = 3.0) -> None:
-    if not proc or not proc.is_alive():
-        return
-    try:
-        proc.terminate()
-        proc.join(timeout=timeout)
-        if proc.is_alive():
-            proc.kill()
-            proc.join()
-    except Exception:
-        pass
+app = typer.Typer(help = "AI-Team",
+                  context_settings = {"help_option_names": ["-h", "--help"]},
+                  no_args_is_help = True,
+                  add_completion = False,
+                  pretty_exceptions_enable=True,
+                  pretty_exceptions_short=True,)
 
 
 @app.command()
+def run(
+    clean_tasks: bool = typer.Option(False,     "--clean-tasks",    help="Clean tasks before run"),
+    clean_logs: bool = typer.Option(False,  "--clean-logs", help="Clean logs  before run"),
+    clean_database: bool = typer.Option(False,     "--clean-stats",    help="Clean database before run"),
+    no_download: bool = typer.Option(False,   "--no-download",  help="No downloading"),
+    no_website: bool = typer.Option(False,      "--no-website",     help="No website"),
+    no_codex: bool = typer.Option(False,        "--no-codex",       help="No Codex"),
+):
+    """
+    Run AI-Team
+    """
+    if clean_tasks:
+        clean(tasks=True)
+    if clean_logs:
+        clean(logs=True)
+    if clean_database:
+        clean(database=True)
+
+    if not no_download:
+        download()
+    if not no_website:
+        website()
+    if not no_codex:
+        codex()
+
+
+@app.command()
+def codex():
+    """
+        Run Codex without website
+    """
+    run_codex.main()
+    typer.echo("Codex worker finished")
+
+
+@app.command()
+def website():
+    """
+        Run website
+    """
+    try:
+        typer.echo("Starting website …")
+        run_website.main()
+    except KeyboardInterrupt:
+        typer.echo(f"\nShutting down …")
+    finally:
+        typer.echo("Program stopeed!")
+
+
+@app.command(no_args_is_help=True)
 def clean(
-    tasks: bool = typer.Option(
-        False, "--tasks", help="Удалить каталог задач (TASKS_ROOT)"
-    ),
-    thinking: bool = typer.Option(
-        False, "--thinking", help="Удалить каталог thinking_logs"
-    ),
-    stats: bool = typer.Option(
-        False, "--stats", help="Удалить файл базы статистики (DB_PATH)"
-    ),
-) -> None:
+    all: bool = typer.Option(False, "--all", help="Delete all"),
+    tasks: bool = typer.Option(False, "--tasks", help="Delete TASKS_DIR"),
+    logs: bool = typer.Option(False, "--logs", help="Delete LOGS_DIR"),
+    database: bool = typer.Option(False, "--database", help="Delete Database"),
+):
     """
-    Очистить задачи, логи и/или базу статистики.
+    Delete something
     """
-    tasks_root = Path(os.environ.get("TASKS_ROOT", "tasks"))
-    thinking_root = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
-    db_path = Path(os.environ.get("DB_PATH", "codex_stats.db"))
+    if tasks or all:
+        shutil.rmtree(TASKS_DIR, ignore_errors=True)
+        typer.echo(f"Deleted tasks directory: {TASKS_DIR}")
 
-    if tasks:
-        shutil.rmtree(ROOT / tasks_root, ignore_errors=True)
-        typer.echo(f"[clean] removed tasks directory: {tasks_root}")
+    if logs or all:
+        shutil.rmtree(LOGS_DIR, ignore_errors=True)
+        typer.echo(f"Deleted logs directory: {LOGS_DIR}")
 
-    if thinking:
-        shutil.rmtree(ROOT / thinking_root, ignore_errors=True)
-        typer.echo(f"[clean] removed thinking logs: {thinking_root}")
-
-    if stats:
+    if database or all:
         try:
-            (ROOT / db_path).unlink()
-            typer.echo(f"[clean] removed stats db: {db_path}")
-        except FileNotFoundError:
-            typer.echo(f"[clean] stats db not found: {db_path}")
+            os.remove(DB_PATH)
+            typer.echo(f"Deleted: {DB_PATH}")
+        except Exception as e:
+            typer.echo(f"Error: {e}")
 
 
 @app.command()
@@ -83,7 +105,7 @@ def download() -> None:
     Скачать или обновить задачи (extract_tasks.py).
     """
     typer.echo("[download] running extract_tasks.py …")
-    if extract_tasks_main() != 0:
+    if run_download.main() != 0:
         raise typer.Exit(code=1)
     typer.echo("[download] done")
 
@@ -91,7 +113,7 @@ def download() -> None:
 @app.command()
 def summarize() -> None:
     """
-    Собрать контекст из старых логов (summarize_logs.py).
+    Собрать контекст из старых логов.
     """
     typer.echo("[summarize] running summarize_logs.py …")
     try:
@@ -125,83 +147,6 @@ def serve(
     os.environ["STATS_HOST"] = host
     os.environ["STATS_PORT"] = str(port)
     serve_stats_main()
-
-
-@app.command()
-def run() -> None:
-    """
-    Запустить Codex-воркер (run_codex.py).
-    """
-    typer.echo("[run] starting Codex worker …")
-    run_codex_main()
-    typer.echo("[run] Codex worker finished")
-
-
-@app.command("all")
-def run_all(
-    clean_tasks: bool = typer.Option(
-        False, "--clean-tasks", help="Перед стартом удалить каталог задач"
-    ),
-    clean_thinking: bool = typer.Option(
-        False, "--clean-thinking", help="Перед стартом удалить thinking_logs"
-    ),
-    clean_stats: bool = typer.Option(
-        False, "--clean-stats", help="Перед стартом удалить базу статистики"
-    ),
-    skip_download: bool = typer.Option(
-        False, "--skip-download", help="Не скачивать задачи (пропустить extract_tasks.py)"
-    ),
-    skip_serve: bool = typer.Option(
-        False, "--skip-serve", help="Не запускать веб-интерфейс"
-    ),
-    skip_run: bool = typer.Option(
-        False, "--skip-run", help="Не запускать Codex-воркер"
-    ),
-    serve_wait: float = typer.Option(
-        0.75,
-        "--serve-wait",
-        help="Секунд подождать после запуска serve_stats.py перед Codex",
-        show_default=True,
-    ),
-) -> None:
-    """
-    Полный цикл: (опционально) очистить, скачать задачи, собрать логи,
-    запустить веб-интерфейс и Codex-воркер.
-    """
-    if clean_tasks:
-        clean(tasks=True)
-    if clean_thinking:
-        clean(thinking=True)
-    if clean_stats:
-        clean(stats=True)
-
-    if not skip_download:
-        download()
-
-    summarize()
-
-    server_proc: Optional[multiprocessing.Process] = None
-
-    def handle_signal(signum: int, _frame) -> None:
-        typer.echo(f"\n[all] received signal {signum}, shutting down …")
-        terminate_process(server_proc)
-        raise typer.Exit(code=128 + signum)
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    try:
-        if not skip_serve:
-            typer.echo("[all] starting web UI in background …")
-            server_proc = multiprocessing.Process(target=serve_stats_main)
-            server_proc.start()
-            time.sleep(max(0.0, serve_wait))
-
-        if not skip_run:
-            run()
-    finally:
-        terminate_process(server_proc)
-        typer.echo("[all] web UI stopped")
 
 
 def main() -> None:

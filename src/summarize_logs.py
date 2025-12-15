@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import os
-from pathlib import Path
 
+from src.models import *
 
 def read_text(path: Path, limit: int = 120_000) -> str:
     try:
@@ -61,14 +60,9 @@ def summarize_thinking(text: str) -> str:
     return "\n".join(out).strip() + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Summarize thinking_logs into per-task codex_context.txt")
-    parser.add_argument("--tasks-root", default=os.environ.get("TASKS_ROOT", "tasks"))
-    parser.add_argument("--logs-root", default=os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
-    args = parser.parse_args(argv)
-
-    tasks_root = Path(args.tasks_root)
-    logs_root = Path(args.logs_root)
+def main():
+    tasks_root = Path(TASKS_DIR)
+    logs_root = Path(LOGS_DIR)
     if not tasks_root.exists():
         return 0
     for task_dir in sorted(p for p in tasks_root.iterdir() if p.is_dir()):

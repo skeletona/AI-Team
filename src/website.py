@@ -11,51 +11,22 @@ from __future__ import annotations
 
 import json
 import hashlib
-import os
 import re
 import shlex
 import subprocess
-import time
 from datetime import datetime
 from html import escape
-from pathlib import Path
 from typing import List, Mapping, Optional
 from urllib.parse import urljoin
-import logging
 
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request
 from flask_sock import Sock
 import requests
-from dotenv import load_dotenv
 
-import stats_db
-
-
-DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
-STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
-STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
-HOST = os.environ.get("STATS_HOST", "127.0.0.1")
-PORT = int(os.environ.get("STATS_PORT", "8000"))
-TASKS_ROOT = Path(os.environ.get("TASKS_ROOT", "tasks"))
-THINKING_LOGS_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "thinking_logs"))
-STALE_RUNNING_SECONDS = int(os.environ.get("STALE_RUNNING_SECONDS", "900"))
-RUNNING_LOG_STALE_SECONDS = int(os.environ.get("RUNNING_LOG_STALE_SECONDS", "45"))
-SOLVES_CACHE_SECONDS = int(os.environ.get("SOLVES_CACHE_SECONDS", "30"))
-CHALLENGES_CACHE_SECONDS = int(os.environ.get("CHALLENGES_CACHE_SECONDS", "60"))
-TOKEN_LIMIT_5H = int(os.environ.get("TOKEN_LIMIT_5H", "250000"))
-TOKEN_LIMIT_WEEK = int(os.environ.get("TOKEN_LIMIT_WEEK", "1000000"))
-CONTEXT_WINDOW_TOKENS = int(os.environ.get("CONTEXT_WINDOW_TOKENS", "272000"))
-CONTEXT_WINDOW_USED_FALLBACK = os.environ.get("CONTEXT_WINDOW_USED")
-CODEX_BUDGET_COMMAND = os.environ.get("CODEX_BUDGET_COMMAND", "").strip()
-
-load_dotenv()
-
-_BUDGET_CACHE: dict[str, object] = {"ts": 0.0, "lines": []}
-_BUDGET_CACHE_TTL_SECONDS = 15.0
-_CHALLENGES_CACHE: dict[str, object] = {"ts": 0.0, "by_id": {}}
+from src.models import *
+from . import db
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text or "")
@@ -116,7 +87,7 @@ def _read_budgets_from_codex(now_ts: float) -> Optional[List[str]]:
     _BUDGET_CACHE["lines"] = wanted
     return wanted
 
-app = Flask(__name__, template_folder="templates", static_folder="static")
+app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 sock = Sock(app)
 
 
@@ -216,7 +187,7 @@ def _log_last_update_ts(task_name: str) -> Optional[float]:
 
 
 def task_view_model(task_id: int) -> Mapping[str, object]:
-    task = stats_db.get_entry(DB_PATH, task_id)
+    task = db.get_entry(DB_PATH, task_id)
 
     return {
         "title": task.name,
@@ -228,7 +199,7 @@ def task_view_model(task_id: int) -> Mapping[str, object]:
 
 
 def stats_view_model() -> Mapping[str, object]:
-    entries = stats_db.read_entries(DB_PATH)
+    entries = db.read_entries(DB_PATH)
     tokens = sum(task.tokens for task in entries)
 
     # --- Budgets ---
@@ -276,7 +247,7 @@ def task_detail(task_id: int) -> Response:
 
 @app.route("/api/task/<int:task_id>/thinking", methods=["GET"])
 def task_thinking_api(task_id: int) -> Response:
-    entries = stats_db.read_entries(DB_PATH) 
+    entries = db.read_entries(DB_PATH) 
     relevant = [e for e in entries if e.id == task_id]
     latest = relevant[-1] if relevant else {}
     task_name = str(latest.get("task") or "")
@@ -297,7 +268,7 @@ def task_thinking_api(task_id: int) -> Response:
 
 
 def _thinking_payload(task_id: int) -> dict[str, object]:
-    entries = stats_db.read_entries(DB_PATH)
+    entries = db.read_entries(DB_PATH)
     relevant = [e for e in entries if e.id == task_id]
     latest = relevant[-1] if relevant else {}
     task_name = str(latest.get("task") or "")
@@ -328,7 +299,7 @@ def task_thinking_ws(ws, task_id: int) -> None:
             ws.send(json.dumps(payload))
         if status != "running":
             break
-        time.sleep(5)
+        sleep(5)
 
 
 @app.route("/api/task/<int:task_id>/message", methods=["POST"])
@@ -338,7 +309,7 @@ def task_message(task_id: int) -> Response:
     if not message:
         return jsonify({"error": "missing message"}), 400
 
-    task = stats_db.get_entry(DB_PATH, task_id)
+    task = db.get_entry(DB_PATH, task_id)
     if not task:
         return jsonify({"error": "task not found"}), 404
     task_dir = TASKS_ROOT / task
@@ -362,17 +333,17 @@ def task_message(task_id: int) -> Response:
     return jsonify({"status": "ok"})
 
 
-def serve_stats_main():
-    print(f"Serving Codex stats on http://{HOST}:{PORT} (source: {DB_PATH})")
+def main():
+    print(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
     try:
         from gevent import pywsgi
         from geventwebsocket.handler import WebSocketHandler
     except Exception:
-        app.run(host=HOST, port=PORT, debug=False)
+        app.run(host=HOST, port=PORT)
     else:
         server = pywsgi.WSGIServer((HOST, PORT), app, handler_class=WebSocketHandler)
         server.serve_forever()
 
 
 if __name__ == "__main__":
-    serve_stats_main()
+    main()

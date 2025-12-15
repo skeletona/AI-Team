@@ -3,36 +3,13 @@
 from __future__ import annotations
 
 import json
-import logging
-import os
 import re
-from pathlib import Path
 from typing import Any, Mapping, Optional, Set
 from urllib.parse import urljoin
-from time import time
-from stats_db import insert_entry
 import requests
-from dotenv import load_dotenv
 
-import ctfd
-
-load_dotenv()
-
-DB_PATH = Path(os.environ.get("DB_PATH", "codex_stats.db"))
-CTFD_URL = os.environ.get("CTFD_URL", "https://play.nitectf25.live").rstrip("/")
-DOWNLOAD_ROOT = Path(os.environ.get("DOWNLOAD_ROOT", "tasks"))
-MAX_ATTACHMENT_BYTES = int(os.environ.get("MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
-TARGET_POINTS = int(os.environ.get("TARGET_POINTS"))
-STATS_PATH = Path(os.environ.get("STATS_PATH", "codex_stats.db"))
-
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
-        " Chrome/120 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+from . import ctfd, db
+from src.models import *
 
 
 def sanitize_component(value: Optional[str], fallback: str) -> str:
@@ -125,7 +102,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             safe = sanitize_component(challenge.get("name"), str(challenge_id))
             print(f"[  skipped  ] {safe:<28} pts={TARGET_POINTS:<3} solved", flush=True)
 
-            insert_entry(challenge_id, "done", safe, flag="")
+            db.insert_entry(challenge_id, "done", safe, flag="")
 
             continue
         detail = ctfd.fetch_challenge_detail(session, challenge_id)
@@ -133,12 +110,12 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             challenge = {**challenge, **detail}
 
         safe_name = sanitize_component(challenge.get("name"), f"challenge-{challenge.get('id')}")
-        folder = DOWNLOAD_ROOT / safe_name
+        folder = TASKS_DIR / safe_name
         existing_metadata_path = folder / "metadata.json"
         if existing_metadata_path.exists():
             # Never delete "touched" folders: they may contain useful Codex context.
             print(f"[  skipped  ] {safe_name:<28} pts={TARGET_POINTS:<3} already downloaded", flush=True)
-            insert_entry(challenge_id, "queued", safe_name)
+            db.insert_entry(challenge_id, "queued", safe_name)
             continue
 
         files = challenge.get("files") or []
@@ -157,7 +134,7 @@ def download_challenges(session: requests.Session, solved_ids: Set[int]) -> None
             )
             continue
         persist_challenge_metadata(challenge, folder)
-        insert_entry(challenge_id, "queued", safe_name)
+        db.insert_entry(challenge_id, "queued", safe_name)
         attachment_names: list[str] = []
         for attachment in challenge.get("files") or []:
             if isinstance(attachment, Mapping):
