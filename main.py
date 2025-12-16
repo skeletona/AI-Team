@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 try:
-    from signal import SIGTERM, SIGKILL
     from sys import executable
     from shutil import rmtree
     import subprocess
@@ -29,14 +28,6 @@ app = typer.Typer(help = "AI-Team",
                   no_args_is_help = True,
                   pretty_exceptions_enable=True,
                   pretty_exceptions_short=True,)
-
-@dataclass
-class Process:
-    name:       str
-    pid:        int
-    log:        Path
-
-
 
 
 @app.command("run")
@@ -71,7 +62,7 @@ def run(
     if "download" in services:
         if ctfd.main() != 0:
             raise typer.Exit(code=1)
-            typer.echo("download done")
+            info("download done")
     if "website" in services:
         start_background(name="website", log="flask.log", attach="website" in attach_lst)
     if "codex" in services:
@@ -94,9 +85,9 @@ def status(
     
     for name in services:
         if name not in PROCS:
-            typer.echo(f"{name}: not running".capitalize())
+            info(f"{name}: not running".capitalize())
         else:
-            typer.echo(f"{name}: running in background".capitalize())
+            info(f"{name}: running in background".capitalize())
 
 
 @app.command("attach")
@@ -114,7 +105,7 @@ def attach(
 
     for name in services:
         if name not in PROCS:
-            typer.echo(f"{name} not running!".capitalize())
+            warning(f"{name}: not running".capitalize())
         else:
             tail_f(PROCS[name]["log"])
 
@@ -190,22 +181,34 @@ def clean(
         if not force:
             confirm = input("Are you sure you want to DELETE ALL? [Y/N]: ")
             if confirm.lower() not in ["yes", "y"]:
-                typer.echo("Did not confirm. Be careful!")
+                info("Did not confirm. Be careful!")
                 return
         things = ["tasks", "codex", "logs", "database"]
 
     if "tasks" in things:
         rmtree(TASKS_DIR, ignore_errors=True)
-        typer.echo(f"Deleted tasks directory: {TASKS_DIR}")
+        warning(f"Deleted tasks directory: {TASKS_DIR}")
     if "codex" in things:
         rmtree(CODEX_DIR, ignore_errors=True)
-        typer.echo(f"Deleted codex directory: {CODEX_DIR}")
+        warning(f"Deleted codex directory: {CODEX_DIR}")
     if "logs" in things:
         rmtree(LOGS_DIR, ignore_errors=True)
-        typer.echo(f"Deleted logs directory: {LOGS_DIR}")
+        warning(f"Deleted logs directory: {LOGS_DIR}")
     if "database" in things:
         os.remove(DB_PATH)
-        typer.echo(f"Deleted: {DB_PATH}")
+        warning(f"Deleted: {DB_PATH}")
+
+
+@app.command("sql")
+@app.command("database", hidden=True)
+@app.command("db", hidden=True)
+def sql():
+    """
+        look inside database
+    """
+    subprocess.run(
+        ["sqlite3", DB_PATH, ".mode column", "SELECT * FROM tasks;"], text=True,
+    )
 
 
 @app.command("summarize")
@@ -213,14 +216,14 @@ def summarize():
     """
     Get short version of what codex has achieved
     """
-    typer.echo("[summarize] running summarize_logs.py …")
+    info("Running summarize_logs.py …")
     try:
         if summarize_logs_main([]) != 0:
             raise typer.Exit(code=1)
     except typer.Exit:
-        typer.echo("[summarize] summarize_logs.py exited non-zero, ignoring")
+        info("[summarize] summarize_logs.py exited non-zero, ignoring")
     else:
-        typer.echo("[summarize] done")
+        info("[summarize] done")
 
 
 def start_background(name: str, log: str = "", attach: bool = False) -> int:
@@ -232,11 +235,11 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
         log_path = LOGS_DIR / f"{name}.log"
 
     if name in PROCS:
-        typer.echo(f"{name} already running".capitalize())
+        warning(f"{name}: already running".capitalize())
         return 0
 
     if attach:
-        typer.echo("Attaching to {name} …")
+        info(f"{name}: attaching")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
                 [executable, "-m", "src." + name],
@@ -246,15 +249,21 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 bufsize=1,
                 start_new_session=True,
             )
-            change_json(Process(name=name, log=str(log_path), pid=p.pid))
-            with p.stdout:
-                for line in p.stdout:
-                    f.write(line)
-                    f.flush()
-                    typer.echo(line, nl=False)
-            p.wait()
+            proc = Process(name=name, log=str(log_path), pid=p.pid)
+            change_json(proc)
+            try:
+                with p.stdout:
+                    for line in p.stdout:
+                        f.write(line)
+                        f.flush()
+                        typer.echo(line, nl=False)
+                p.wait()
+            except KeyboardInterrupt:
+                typer.echo()
+                p.kill()
+                change_json(proc, delete=True)
+
     else:
-        typer.echo(f"Starting {name} …")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
                 [executable, "-m", "src." + name],
@@ -269,38 +278,39 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
 
 def stop_background(name: str) -> None:
     if name not in PROCS:
-        typer.echo(f"{name} not running!")
+        warning(f"{name}: not running. Cannot stop.")
         return
 
     proc = Process(**PROCS[name])
 
     try:
-        os.kill(proc.pid, SIGTERM)
-        typer.echo(f"Stopping {name}")
+        os.killpg(proc.pid, SIGTERM)
+        info(f"{name}: stopping (PID {proc.pid})")
 
         waited = 0
         while waited < GRACE_TIME:
             try:
                 os.kill(proc.pid, 0)
             except ProcessLookupError:
-                typer.echo(f"{name} stopped".capitalize())
+                info(f"{name}: stopped")
                 return
             sleep(0.5)
             waited += 0.5
 
-        typer.echo(f"{name} did not exit gracefully in {GRACE_TIME} seconds. Killing.")
-        os.kill(proc.pid, SIGKILL)
+        warning(f"{name}: did not exit gracefully in {GRACE_TIME} seconds. Killing.")
+        os.killpg(proc.pid, SIGKILL)
 
     except ProcessLookupError:
-        typer.echo(f"No {name} process found")
+        warning(f"No {name} process found")
     except Exception as e:
-        typer.echo(f"Error stopping {name}: {e}")
+        error(f"{name}: error stopping {e}")
         raise typer.Exit(code=1)
     finally:
         change_json(proc, delete=True)
 
 
 def change_json(proc: Process, delete: bool = False) -> none:
+    global PROCS
     if not JSON_FILE.exists():
         with open(JSON_FILE, "w") as json_file:
             json.dump({"sus": "sas"}, json_file, indent=2)
@@ -315,6 +325,7 @@ def change_json(proc: Process, delete: bool = False) -> none:
 
     with open(JSON_FILE, "w") as json_file:
         json.dump(data, json_file, indent=2)
+    PROCS = data
 
 
 def tail_f(path: str, sleep_time: float = 0.5):
@@ -330,7 +341,18 @@ def tail_f(path: str, sleep_time: float = 0.5):
 
 if __name__ == "__main__":
     if JSON_FILE.exists():
-        PROCS = json.loads(JSON_FILE.read_text(encoding="utf-8"))
+        try:
+            PROCS = json.loads(JSON_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            error(f"Failed to load JSON: {e}")
+            PROCS = dict()
+        else:
+            for proc in PROCS.values():
+                try:
+                    os.kill(proc["pid"], 0)
+                except ProcessLookupError:
+                    info(f"{proc["name"]} is in JSON but not running")
+                    change_json(Process(**proc), delete=True)
     else:
         PROCS = dict()
 

@@ -1,4 +1,3 @@
-from logging import basicConfig, debug, error, info, warning
 from pathlib import Path
 from time import time
 import re
@@ -22,12 +21,11 @@ def login(session: requests.Session) -> bool:
         warning("login CSRF fetch failed: %s", exc)
         return False
     payload = {
-        "name": TEAM_NAME,
-        "email": TEAM_EMAIL,
+        "name": TEAM_EMAIL,
         "password": TEAM_PASSWORD,
         "nonce": token,
     }
-    resp = session.post(urljoin(CTFD_URL, "/login"), data=payload, headers=DEFAULT_HEADERS)
+    resp = session.post(urljoin(CTFD_URL, "/login"), data=payload)
     body = resp.text.lower()
     if resp.status_code == 403 or "cf-turnstile" in body:
         error("login blocked by Turnstile/firewall")
@@ -41,7 +39,7 @@ def login(session: requests.Session) -> bool:
 def is_logged_in(session: requests.Session) -> bool:
     resp = session.get(
         urljoin(CTFD_URL, "/api/v1/users/me"),
-        headers={"Accept": "application/json", **DEFAULT_HEADERS},
+        headers={"Accept": "application/json", **CTFD_HEADERS},
         allow_redirects=False,
     )
     if resp.status_code != 200:
@@ -53,31 +51,34 @@ def is_logged_in(session: requests.Session) -> bool:
     return bool(payload.get("data"))
 
 
-def create_session() -> Optional[requests.Session]:
+def create_session() -> requests.Session | None:
     session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
+    session.headers.update(CTFD_HEADERS)
+    if CTFD_SKIP_LOGIN:
+        info("Skipping login")
+        return session
     if not login(session):
         return None
     return session
 
 
-
-def submit_flag(session: requests.Session, challenge_id: int, flag: str) -> bool:
-    endpoint = urljoin(CTFD_URL, "/api/v1/challenges/attempt")
+def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool:
+    endpoint = urljoin(CTFD_URL + CTFD_SUBMIT_API + challenge_id, CTFD_SUBMIT_PATH)
     payload = {"submission": flag, "challenge_id": challenge_id}
     csrf_token = session.cookies.get("csrf_token")
     if not csrf_token:
         try:
+            info("re-fetching csrf token")
             csrf_token = fetch_csrf_token(session, "/challenges")
         except Exception as exc:
             warning("could not obtain CSRF token for submission: %s", exc)
-    headers = {"X-Requested-With": "XMLHttpRequest", **DEFAULT_HEADERS}
+    headers = {"X-Requested-With": "XMLHttpRequest", **CTFD_HEADERS}
     if csrf_token:
         headers["CSRF-Token"] = csrf_token
     headers["Referer"] = urljoin(CTFD_URL, "/challenges")
     resp = session.post(
         endpoint,
-        json=payload,
+        json=payload,       # files=payload
         headers=headers,
     )
     if resp.status_code not in (200, 201):
@@ -104,7 +105,7 @@ def submit_flag(session: requests.Session, challenge_id: int, flag: str) -> bool
 
 def fetch_csrf_token(session: requests.Session, path: str) -> str:
     url = urljoin(CTFD_URL, path)
-    resp = session.get(url, headers=DEFAULT_HEADERS)
+    resp = session.get(url)
     resp.raise_for_status()
     html = resp.text
     patterns = [
@@ -122,22 +123,22 @@ def fetch_csrf_token(session: requests.Session, path: str) -> str:
 def fetch_tasks(session: requests.Session) -> list[Task]:
     try:
         resp = session.get(
-            urljoin(CTFD_URL, "/api/v1/challenges"),
-            headers={"Accept": "application/json", **DEFAULT_HEADERS},
+            urljoin(CTFD_URL, CTFD_TASKS_API),
+            headers={"Accept": "application/json", **CTFD_HEADERS},
         )
         resp.raise_for_status()
         payload = resp.json()
-        tasks = payload.get("data", [])
+        tasks: list = payload.get(CTFD_TASKS_JSON_LIST, [])
 
         tasks: list[Task] = [
             Task(
-                id=task["id"],
+                id=task[CTFD_JSON_FORMAT["id"]],
                 timestamp=now(),
-                name=task["name"],
+                name=task[CTFD_JSON_FORMAT["name"]],
                 status="queued",
-                points=task["value"],
-                solves=task["solves"],
-                category=task["category"],
+                points=task[CTFD_JSON_FORMAT["points"]],
+                solves=task[CTFD_JSON_FORMAT["solves"]] if CTFD_JSON_FORMAT["solves"] else 0,
+                category=task[CTFD_JSON_FORMAT["category"]] if CTFD_JSON_FORMAT["category"] else "",
             )
             for task in tasks
         ]
@@ -146,40 +147,58 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
         return tasks
 
     except (requests.RequestException, ValueError) as e:
-        error(f"Failed to fetch challenges: {e}")
+        error(f"Failed to fetch tasks: {e}")
         return []
 
 
-def fetch_challenge_detail(session: requests.Session, challenge_id: int) -> str | None:
+def fetch_task_details(session: requests.Session, task_id: Any) -> str | None:
     resp = session.get(
-        urljoin(CTFD_URL, f"/api/v1/challenges/{challenge_id}"),
-        headers={"Accept": "application/json", **DEFAULT_HEADERS},
+        urljoin(CTFD_URL, CTFD_TASK_API + str(task_id)),
+        headers={"Accept": "application/json", **CTFD_HEADERS},
     )
     resp.raise_for_status()
     payload = resp.json()
-    return payload.get("data") if isinstance(payload, dict) else {}
+    if CTFD_TASK_DETAIL_LIST:
+        return payload.get(CTFD_TASK_DETAIL_LIST) if isinstance(payload, dict) else {}
+    else:
+        return payload
 
 
-def download_task_files(
-    task: Task, session: requests.Session
-) -> int:
+#def get_download_uuid(session: requests.Session, challenge_id: str, file_id: int) -> str:
+#    url = (
+#        f"{CTFD_URL}{CTFD_TASK_API}{challenge_id}/download/{file_id}"
+#    )
+#    r = session.get(url)
+#    r.raise_for_status()
+#    data = r.json()
+#    return data["data"]["uuid"]
+
+
+def download_task_files(task: Task, session: requests.Session) -> int:
     task_dir = TASKS_DIR / task.name
     task_dir.mkdir(exist_ok=True)
 
     try:
-        task_details = fetch_challenge_detail(session, task.id)
-        file_urls: list = task_details.get('files')
+        task_details = fetch_task_details(session, task.id)
+        files = list(task_details.get(CTFD_FILES_JSON))  # file["id"]
     except requests.exceptions.RequestException as e:
-        error(f"Failed to fetch challenge details for {task.name}: {e}")
+        error(f"Failed to fetch challenge details: {task.name}: {e}")
         return
 
-    if not file_urls:
-        info(f"Task '{task.name}' has no files to download.")
+    task_info = asdict(task)
+    task_info["description"] = task_details.get("description", "")
+
+    task_json_path = task_dir / "task.json"
+    with open(task_json_path, "w") as f:
+        json.dump(task_info, f, indent=4, sort_keys=True, ensure_ascii=False)
+
+
+    if not files:
         return
 
-    info(f"Downloading {len(file_urls)} files for challenge '{task.name}'...")
-    for url in file_urls:
-        full_url = urljoin(CTFD_URL, url)
+    info(f"Downloading {len(files)} files for challenge '{task.name}'...")
+    for file in files:
+        full_url = urljoin(CTFD_URL + CTFD_DOWNLOAD_API, file)  # uuid = get_download_uuid(session, task.id, file)
         try:
             response = session.get(full_url, allow_redirects=True, stream=True)
             response.raise_for_status()
@@ -188,7 +207,7 @@ def download_task_files(
                 header = response.headers["content-disposition"]
                 filename = header.split("filename=")[1].strip('"')
             else:
-                filename = unquote(url.split("/")[-1])
+                filename = str(file)
 
             file_path = task_dir / filename
             size = 0
@@ -198,7 +217,7 @@ def download_task_files(
                     if not chunk:
                         continue
                     size += len(chunk)
-                    if size > MAX_ATTACHMENT_SIZE:
+                    if size > MAX_ATTACHMENT_SIZE * 1024 * 1024:
                         error(f"{task.name}: Aborting download '{filename}': size > {MAX_ATTACHMENT_SIZE} MB")
                         return 1
                     f.write(chunk)
@@ -212,7 +231,6 @@ def download_task_files(
 
 
 def download_new_tasks():
-    basicConfig(level="INFO", format="%(asctime)s - %(levelname)s - %(message)s")
     print("Downloading tasks …", flush=True)
 
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -240,12 +258,10 @@ def download_new_tasks():
             continue
 
         new_tasks_count += 1
-        info(f"Processing new task: {task.name}")
 
         if download_task_files(task, session):
             continue
 
-        print(task, flush=1)
         create_entry(**asdict(task))
         info(f"Added {task.name}")
 
@@ -254,7 +270,61 @@ def download_new_tasks():
     else:
         info("No new tasks to add")
 
+def launch_instance(session: requests.Session, task_id: str) -> str | None:
+    """Launch an instance for a given task and return the connection URL."""
+    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
+    resp = session.post(endpoint)
+    if resp.status_code != 200:
+        warning(f"Failed to launch instance for task {task_id}, status code: {resp.status_code}")
+        return None
+    try:
+        data = resp.json()
+        if data.get("success"):
+            container_data = data.get("containers_data", [])
+            if container_data:
+                container = container_data[0]
+                ip = data.get("ip")
+                port = container.get("port")
+                conntype = container.get("conntype", "http")
+                if ip and port:
+                    return f"{conntype}:{ip}:{port}"
+        warning(f"Could not extract connection info from launch response for task {task_id}: {data}")
+        return None
+    except ValueError:
+        warning(f"Failed to parse JSON response when launching instance for task {task_id}")
+        return None
+
+def get_instance_url(session: requests.Session, task_id: str) -> str | None:
+    """Get the instance URL for a given task."""
+    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
+    resp = session.get(endpoint)
+    if resp.status_code != 200:
+        warning(f"Failed to get instance url for task {task_id}, status code: {resp.status_code}")
+        return None
+    try:
+        data = resp.json()
+        if data.get("success"):
+            container_data = data.get("containers_data", [])
+            if container_data:
+                container = container_data[0]
+                ip = data.get("ip")
+                port = container.get("port")
+                conntype = container.get("conntype", "http")
+                if ip and port:
+                    return f"{conntype}:{ip}:{port}"
+        return None # It's normal for there to be no instance if it hasn't been launched
+    except ValueError:
+        warning(f"Failed to parse JSON response when getting instance url for task {task_id}")
+        return None
+
+def delete_instance(session: requests.Session, task_id: str) -> bool:
+    """Delete an instance for a given task."""
+    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
+    resp = session.delete(endpoint)
+    if resp.status_code != 200:
+        warning(f"Failed to delete instance for task {task_id}, status code: {resp.status_code}")
+        return False
+    return True
 
 def main():
-    basicConfig(level=INFO, format="%(levelname)s: %(message)s", force=True)
     download_new_tasks()

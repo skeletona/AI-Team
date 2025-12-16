@@ -38,12 +38,12 @@ def _create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
-            id        INTEGER PRIMARY KEY,
+            id        TEXT PRIMARY KEY,
             timestamp INTEGER NOT NULL,
             name      TEXT,
             status    TEXT NOT NULL,
             points    INTEGER NOT NULL,
-            solves    INTEGER NOT NULL,
+            solves    INTEGER,
             category  TEXT,
             flag      TEXT,
             tokens    INTEGER NOT NULL,
@@ -98,7 +98,7 @@ def ensure_tasks_db(path: Path) -> None:
 
 
 def insert_entry(
-    id: int,
+    id: str,
     status: str,
     timestamp: str | None = None,
     name: str | None = None,
@@ -150,7 +150,7 @@ def insert_entry(
 
 
 def create_entry(
-    id: int,
+    id: str,
     status: str,
     timestamp: str | None = None,
     name: str | None = None,
@@ -224,7 +224,7 @@ def move_status(path: Path, old_status: str, new_status: str) -> None:
         conn.commit()
 
 
-def get_entry(path: Path, id: int) -> Task | None:
+def get_entry(path: Path, id: str) -> Task | None:
     ensure_tasks_db(path)
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row

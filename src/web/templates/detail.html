@@ -46,6 +46,12 @@
       const thinkingStatus = document.querySelector('[data-thinking-status]');
       const taskId = {{ task_id }};
 
+      function scrollToBottom() {
+        console.log("sus")
+        thinkingContainer.scrollTop = thinkingContainer.scrollHeight;
+      }
+      window.addEventListener('load', scrollToBottom);
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/task/${taskId}/update`;
 
@@ -54,6 +60,7 @@
       ws.onmessage = function(event) {
         thinkingContainer.textContent += event.data;
         thinkingContainer.scrollTop = thinkingContainer.scrollHeight;
+        scrollToBottom();
       };
 
       ws.onopen = function() {

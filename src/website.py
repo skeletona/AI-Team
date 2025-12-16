@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""
-Simple stats dashboard for Codex task runs.
-
-Reads entries from DB_PATH (default: codex_stats.db) and serves a
-small HTML page showing recent runs, Codex thinking snippets, attempted flags,
-and token usage totals, using Flask.
-"""
 
 from __future__ import annotations
 
-import json
-import hashlib
 import re
+from sys import exit
 from html import escape
 from typing import List, Mapping, Optional
 
-from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request
+from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request, abort
 from flask_sock import Sock
 
 from src.models import *
@@ -47,20 +39,26 @@ def _percent_left(used: int, limit: int) -> int:
     return int(round((1.0 - ratio) * 100))
 
 
-def load_log(task: Task) -> str | None:
+def load_log(task: Task | None) -> str | None:
+    if not task:
+        return None
+
     path = CODEX_DIR / task.name / "thinking.log"
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         error(f"Error reading thinking.log: {path}")
-        return None
+        return ""
     if len(content) > 200_000:
         return "\n\n[truncated]" + content[-200_000:]
     return content
 
 
-def task_view_model(task_id: int) -> Mapping[str, object]:
-    task = db.get_entry(DB_PATH, task_id)
+def task_view_model(task: Task) -> dict:
+    if not task:
+        error("task_view_model but task does not exist")
+        return {}
+
     text = load_log(task)
 
     return {
@@ -80,9 +78,9 @@ def stats_view_model() -> Mapping[str, object]:
     # --- Budgets ---
     budgets = {  # TODO
         "tokens_5h": 0,
-        "limit_5h": TOKEN_LIMIT_5H,
+        "limit_5h": 250000,
         "tokens_week": 0,
-        "limit_week": TOKEN_LIMIT_WEEK,
+        "limit_week": 1000000,
     }
 
     # --- Cards (task detail page only) ---
@@ -113,15 +111,19 @@ def index() -> Response:
     return Response(html, mimetype="text/html")
 
 
-@app.route("/task/<int:task_id>", methods=["GET"])
-def task_detail(task_id: int) -> Response:
-    context = task_view_model(task_id)
+@app.route("/task/<string:task_id>", methods=["GET"])
+def task_detail(task_id: str) -> Response:
+    task = db.get_entry(DB_PATH, task_id)
+    if not task:
+        abort(404)
+
+    context = task_view_model(task)
     html = render_template("detail.html", **context)
     return Response(html, mimetype="text/html")
 
 
-@sock.route("/task/<int:task_id>/update")
-def load_codex_ws(ws, task_id: int):
+@sock.route("/task/<string:task_id>/update")
+def load_codex_ws(ws, task_id: str):
     # Wait for the client to send a message to start the log stream
     message = ws.receive()
     if not message or not message.startswith("start_log_stream:"):
@@ -153,7 +155,7 @@ def load_codex_ws(ws, task_id: int):
 
 
 @app.route("/api/task/<int:task_id>/message", methods=["POST"])
-def task_message(task_id: int) -> Response:
+def task_message(task_id: str) -> Response:
     data = request.get_json(silent=True) or {}
     message = str(data.get("message") or "").strip()
     if not message:
@@ -164,7 +166,7 @@ def task_message(task_id: int) -> Response:
         return jsonify({"error": "task not found"}), 404
     task_dir = TASKS_DIR / task
 
-    ts = time().strftime("%Y-%m-%d %H:%M:%S")
+    ts = now().strftime("%Y-%m-%d %H:%M:%S")
     context_path = task_dir / "codex_context.txt"
     note = f"[Operator note {ts}]\n{message}\n\n"
     try:
@@ -183,10 +185,16 @@ def task_message(task_id: int) -> Response:
     return jsonify({"status": "ok"})
 
 
-def main():
-    info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
-    app.run(host=HOST, port=PORT, debug=DEBUG_FLASK, use_reloader=False)
+def handle_sigterm(signum, frame):
+    info("recieved SIGTERM")
+    exit(0)
 
+
+def main():
+    signal(SIGTERM, handle_sigterm)
+    info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
+    app.run(host=HOST, port=PORT, debug=DEBUG_FLASK)
+    info("ended")
 
 if __name__ == "__main__":
     main()
