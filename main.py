@@ -236,6 +236,63 @@ def summarize():
         info("[summarize] done")
 
 
+@app.command("download")
+def download(
+    clean_lst: list[str] = typer.Option(
+        None,
+        "--clean",
+        "-c",
+        help="What to clean before run: tasks codex logs database all",
+    ),
+):
+    """
+    Run the download service
+    """
+    run(services=["download"], clean_lst=clean_lst)
+
+
+@app.command("website")
+def website(
+    clean_lst: list[str] = typer.Option(
+        None,
+        "--clean",
+        "-c",
+        help="What to clean before run: tasks codex logs database all",
+    ),
+    attach_lst: list[str] = typer.Option(
+        [],
+        "--attach",
+        "-a",
+        help="What to attach to: website codex",
+    ),
+):
+    """
+    Run the website service
+    """
+    run(services=["website"], clean_lst=clean_lst, attach_lst=attach_lst)
+
+
+@app.command("codex")
+def codex(
+    clean_lst: list[str] = typer.Option(
+        None,
+        "--clean",
+        "-c",
+        help="What to clean before run: tasks codex logs database all",
+    ),
+    attach_lst: list[str] = typer.Option(
+        [],
+        "--attach",
+        "-a",
+        help="What to attach to: website codex",
+    ),
+):
+    """
+    Run the codex service
+    """
+    run(services=["codex"], clean_lst=clean_lst, attach_lst=attach_lst)
+
+
 def start_background(name: str, log: str = "", attach: bool = False) -> int:
     os.makedirs(LOGS_DIR, exist_ok=True)
 
