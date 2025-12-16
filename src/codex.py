@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
 from random import shuffle
 import re
 import subprocess
-import threading
 from typing import Any, Mapping, Optional, Sequence
 import concurrent.futures
-import json
 
 from src.models import *
 from . import db, ctfd
 
-STOP_EVENT = threading.Event()
-RUNNING_CODEX: dict[int: subprocess.Popen] = {}
+STOP_EVENT = False
+RUNNING_CODEX: dict[str: subprocess.Popen] = {}
 
 
-def build_flag_regex(flag_regex: str | None, flag_format: str) -> re.Pattern:
+def build_flag_regex(flag_regex: str | None, flag_format: str | None) -> re.Pattern:
     if flag_regex:
         try:
             flag_regex = re.compile(flag_regex)
@@ -40,30 +37,6 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 
 
-def extract_tokens(output: str = "", task: Task = None) -> int:
-    if output:
-        clean = strip_ansi(output)
-    elif task:
-        log_path = CODEX_DIR / task.name / "thinking.log"
-        try:
-            with open(log_path, "r", encoding="utf-8") as f:
-                clean = strip_ansi(f.read())
-        except FileNotFoundError:
-            return 0
-    else:
-        error("extract_tokens has invalid parameters")
-        return 0
-
-    match = re.search(r"tokens used\s*([\d,]+)", clean, flags=re.IGNORECASE)
-    if match:
-        try:
-            return int(match.group(1).replace(",", ""))
-        except (ValueError, IndexError):
-            error("Failed to extract_tokens")
-            return 0
-    return 0
-
-
 def extract_thinking(output: str) -> str:
     clean = strip_ansi(output)
     lower = clean.lower()
@@ -76,36 +49,42 @@ def extract_thinking(output: str) -> str:
     return "\n".join(snippet).rstrip()
 
 
-def persist_task_logs(task: Task, output: str) -> None:
+def write_logs(task: Task, output: str, attempt: int) -> None:
     try:
         logs_root = CODEX_DIR / task.name
         logs_root.mkdir(parents=True, exist_ok=True)
-        (logs_root / "thinking.log").write_text(output, encoding="utf-8")
+        task.log = logs_root / task.name / f"{CODEX_FILE}.{attempt}"
+        info(task.log)
+        task.log.write_text(output, encoding="utf-8")
     except OSError as exc:
         warning("failed to write logs under %s: %s", task.name, exc)
 
 
-def run_codex_with_logs(
-    command: list[str],
-    task: Task,
-) -> str:
-    logs_root = CODEX_DIR / task.name
-    logs_root.mkdir(parents=True, exist_ok=True)
-
-    output_log = logs_root / "thinking.log"
+def run_codex(task: Task, prompt: str) -> str:
+    command = CODEX_COMMAND + [prompt]
     completed_normally = False
 
-    with output_log.open("wb") as fh:
+    task.log.parent.mkdir(parents=True, exist_ok=True)
+
+    with task.log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
             cwd=TASKS_DIR / task.name,
-            stdout=fh,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=dict(os.environ),
+            text=True,
+            bufsize=1,
         )
-        if task.id is not None:
-            RUNNING_CODEX[task.id] = proc
+        RUNNING_CODEX[task.id] = proc
+
+        lines: list[str] = []
         try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                fh.write(line)
+                fh.flush()
+                lines.append(line)
             proc.wait(timeout=CODEX_TIMEOUT)
             completed_normally = True
         except Exception:
@@ -114,20 +93,9 @@ def run_codex_with_logs(
             if task.id is not None:
                 RUNNING_CODEX.pop(task.id, None)
 
-    output = output_log.read_text(encoding="utf-8", errors="ignore")
-    tokens = extract_tokens(output=output)
-    if tokens:
-        info(f"tokens used: {tokens}")
+    output = "".join(lines)
     return output
 
-
-def run_codex(
-    task: Task,
-    prompt: str,
-) -> str:
-    info("running codex for %s", task.name)
-    command = CODEX_COMMAND + [prompt]
-    return run_codex_with_logs(command, task)
 
 
 def local_attachment_names(task: Task) -> list[str]:
@@ -196,12 +164,6 @@ def process_task(task: Task) -> int:
     instance_url = None
     try:
         if is_docker_task:
-            if not session:
-                # This should not be reached due to the check above, but as a safeguard:
-                error("Cannot process docker task without a session.")
-                db.insert_entry(task.id, "failed", error="login failed")
-                return 1
-
             instance_url = ctfd.get_instance_url(session, task.id)
             if not instance_url:
                 info(f"No running instance for {task.name}, launching one.")
@@ -217,26 +179,23 @@ def process_task(task: Task) -> int:
         last_output = ""
 
         for attempt in range(1, MAX_CODEX_ATTEMPTS + 1):
-            if STOP_EVENT.is_set():
+            if STOP_EVENT:
                 return
+            
+            info(f"running codex for {task.name} ({attempt})")
+
             try:
                 output = run_codex(task, prompt)
-            except FileNotFoundError:
-                db.insert_entry(task.id, "failed", error="codex command not found")
+            except FileNotFoundError as e:
+                error(e)
+                db.insert_entry(task.id, "failed", error=f"file not found")
                 return 1
-            last_output = output
 
-            persist_task_logs(task, output)
-            flags = [m.group(0) for m in FLAG_RE.finditer(output)]
+            write_logs(task, output, attempt)
 
-            validated = False
-            for flag in reversed(flags):
-                if session and ctfd.submit_flag(session, task.id, flag):
-                    info(f"successfull flag found for {task.name}: {flag}")
-                    db.insert_entry(task.id, "done", flag=flag, tokens=extract_tokens(output=output))
-                    return 0
-                else:
-                    info(f"incorrect flag found for {task.name}: {flag}")
+            result = inspect_output(session, task, output)
+            if result == 0:
+                return 0
 
             prompt = (
                 prompt
@@ -245,12 +204,59 @@ def process_task(task: Task) -> int:
             )
 
         warning(f"max attempts reached for {task.name}")
-        db.insert_entry(task.id, "failed", tokens=extract_tokens(output=last_output), error="max attempts reached")
+        db.insert_entry(task.id, "failed", error="max attempts reached")
         return 0
     finally:
         if is_docker_task and instance_url and session:
             info(f"Deleting instance for {task.name}")
             ctfd.delete_instance(session, task.id)
+
+
+def inspect_output(session, task, output) -> int:
+    clean = strip_ansi(output)
+
+    tokens = 0
+    flags = []
+
+    for line in clean.splitlines():
+        if tokens == 0:
+            m = re.search(r"tokens used\s*([\d,]+)", line, flags=re.IGNORECASE)
+            if m:
+                try:
+                    tokens = int(m.group(1).replace(",", ""))
+                    info(f"{task.name}: tokens used: {tokens}")
+                    db.insert_entry(task.id, tokens=tokens)
+
+                except (ValueError, IndexError):
+                    error("Failed to extract tokens")
+                    tokens_used = 0
+
+        if "Access blocked" in line:
+            error(f"{task.name}: Cannot connect to Codex servers (check your VPN)")
+            return -1
+
+        if "You've hit your usage limit" in line:
+            error(f"{task.name}: You have reached your codex limit. Ai-Team can not continue.")
+            raise KeyboardInterrupt
+            return -1
+
+        flag = FLAG_RE.search(line)
+        if flag:
+            flags.append(flag.group(0))
+
+    for flag in reversed(flags):
+        if ctfd.submit_flag(session, task.id, flag):
+            info(f"successfull flag found for {task.name}: {flag}")
+            db.insert_entry(
+                task.id,
+                "done",
+                flag=flag,
+            )
+            return 1
+        else:
+            info(f"{task.name}: incorrect flag found: {flag}")
+
+    return 0
 
 
 def run_tasks():
@@ -270,7 +276,7 @@ def run_tasks():
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CODEX_WORKERS)
     try:
-        while pending or active:
+        while pending:
             while pending and len(active) < MAX_CODEX_WORKERS:
                 task = pending.pop(0)
                 fut = executor.submit(process_task, task)
@@ -282,14 +288,17 @@ def run_tasks():
             for f in done:
                 task = future_to_task.pop(f)
                 f.result()
+
     except KeyboardInterrupt:
         info("Stopping signal recieved")
     finally:
-        info("Exiting")
         for fut, task in future_to_task.items():
-            db.insert_entry(task.id, "failed", tokens=extract_tokens(task=task), error="interrupted")
             fut.cancel()
-        STOP_EVENT.set()
+            if fut in active:
+                db.insert_entry(task.id, "failed", error="interrupted")
+        db.move_status(DB_PATH, "running", "failed")
+        global STOP_EVENT
+        STOP_EVENT = True
         for proc in RUNNING_CODEX.values():
             proc.kill()
         executor.shutdown(wait=True)
@@ -297,13 +306,13 @@ def run_tasks():
 
 
 def handle_sigterm(signum, frame):
+    info("recieved SIGTERM")
     raise KeyboardInterrupt
 
 
 def main():
-    info(f"FLAG_REGEX: {flag_regex}")
+    info(f"FLAG_REGEX: {FLAG_RE.pattern}")
     signal(SIGTERM, handle_sigterm)
-    db.move_status(DB_PATH, "running", "failed")
     info("Starting Codex worker …")
     run_tasks()
 

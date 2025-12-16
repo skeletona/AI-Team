@@ -7,7 +7,7 @@ from urllib.parse import unquote, urljoin
 
 import requests
 
-from src.db import create_entry, read_entries
+from src.db import insert_entry, read_entries
 from src.models import *
 
 
@@ -83,12 +83,12 @@ def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool
     )
     if resp.status_code not in (200, 201):
         warning("flag submission returned HTTP %s", resp.status_code)
-        print(f"submission failed: HTTP {resp.status_code}", flush=True)
+        error(f"submission failed: HTTP {resp.status_code}")
         return False
     try:
         payload = resp.json()
     except ValueError:
-        print("submission failed: invalid JSON response", flush=True)
+        error("submission failed: invalid JSON response")
         return False
     success, data = payload.get("success"), payload.get("data")
     if success:
@@ -96,10 +96,10 @@ def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool
             info("server accepted flag for challenge %s", challenge_id)
             return True
         else:
-            print(f"submission failed: {data.get('message')}", flush=True)
+            error(f"submission failed: {data.get('message')}")
             return False
     else:
-        print(f"submission failed: {payload}", flush=True)
+        error(f"submission failed: {payload}")
         return False
 
 
@@ -133,7 +133,6 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
         tasks: list[Task] = [
             Task(
                 id=task[CTFD_JSON_FORMAT["id"]],
-                timestamp=now(),
                 name=task[CTFD_JSON_FORMAT["name"]],
                 status="queued",
                 points=task[CTFD_JSON_FORMAT["points"]],
@@ -143,7 +142,6 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
             for task in tasks
         ]
 
-        info(f"Fetched tasks: {len(tasks)}")
         return tasks
 
     except (requests.RequestException, ValueError) as e:
@@ -196,7 +194,6 @@ def download_task_files(task: Task, session: requests.Session) -> int:
     if not files:
         return
 
-    info(f"Downloading {len(files)} files for challenge '{task.name}'...")
     for file in files:
         full_url = urljoin(CTFD_URL + CTFD_DOWNLOAD_API, file)  # uuid = get_download_uuid(session, task.id, file)
         try:
@@ -212,6 +209,7 @@ def download_task_files(task: Task, session: requests.Session) -> int:
             file_path = task_dir / filename
             size = 0
 
+            info(f"\tDownloading {file_path}")
             with open(file_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if not chunk:
@@ -222,7 +220,6 @@ def download_task_files(task: Task, session: requests.Session) -> int:
                         return 1
                     f.write(chunk)
 
-            info(f"Downloaded '{filename}' ({size} bytes) to '{file_path}'")
 
         except requests.exceptions.RequestException as e:
             error(f"Failed to download {full_url}: {e}")
@@ -231,13 +228,13 @@ def download_task_files(task: Task, session: requests.Session) -> int:
 
 
 def download_new_tasks():
-    print("Downloading tasks …", flush=True)
 
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
     existing_tasks = read_entries(DB_PATH)
     existing_ids = {task.id for task in existing_tasks}
-    info(f"Existing tasks: {len(existing_tasks)}")
+    info(f"Already downloaded tasks: {len(existing_tasks)}")
+    info("Downloading tasks")
 
     session = create_session()
     if not session:
@@ -253,6 +250,10 @@ def download_new_tasks():
     for task in tasks:
         if task.id in existing_ids:
             continue
+
+        info(f"\tAdding {task.name}")
+        insert_entry(**asdict(task))
+        
         if task.status == "solved":
             info(f"Already solved, skipping: {task.name}")
             continue
@@ -262,8 +263,6 @@ def download_new_tasks():
         if download_task_files(task, session):
             continue
 
-        create_entry(**asdict(task))
-        info(f"Added {task.name}")
 
     if new_tasks_count > 0:
         info(f"New tasks added: {new_tasks_count}")

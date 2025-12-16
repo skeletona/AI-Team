@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 try:
     from sys import executable
@@ -53,16 +52,14 @@ def run(
     """
     Run AI-Team
     """
+    
     if clean:
         clean(clean_lst)
 
     if not services:
         services = ["download", "website", "codex"]
-
     if "download" in services:
-        if ctfd.main() != 0:
-            raise typer.Exit(code=1)
-            info("download done")
+        ctfd.main()
     if "website" in services:
         start_background(name="website", log="flask.log", attach="website" in attach_lst)
     if "codex" in services:
@@ -131,6 +128,7 @@ def stop(
 
 
 @app.command("restart")
+@app.command("rerun", hidden=True)
 def restart(
     services: list[str] = typer.Argument(
         None,
@@ -207,8 +205,20 @@ def sql():
         look inside database
     """
     subprocess.run(
-        ["sqlite3", DB_PATH, ".mode column", "SELECT * FROM tasks;"], text=True,
-    )
+        ["sqlite3", DB_PATH, ".mode column", '''SELECT
+            datetime(timestamp, 'unixepoch', 'localtime') AS timestamp,
+            id,
+            name,
+            status,
+            points,
+            solves,
+            category,
+            flag,
+            attempt,
+            tokens,
+            error
+            FROM tasks;'''
+         ])
 
 
 @app.command("summarize")
@@ -235,7 +245,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
         log_path = LOGS_DIR / f"{name}.log"
 
     if name in PROCS:
-        warning(f"{name}: already running".capitalize())
+        warning(f"{name}: can not run: already running")
         return 0
 
     if attach:
@@ -247,7 +257,6 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                start_new_session=True,
             )
             proc = Process(name=name, log=str(log_path), pid=p.pid)
             change_json(proc)
@@ -260,10 +269,19 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 p.wait()
             except KeyboardInterrupt:
                 typer.echo()
-                p.kill()
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    p.terminate()
+                    try:
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+            finally:
                 change_json(proc, delete=True)
 
     else:
+        info(f"{name}: Starting")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
                 [executable, "-m", "src." + name],
@@ -272,7 +290,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 start_new_session=True,
             )
         change_json(Process(name=name, log=str(log_path), pid=p.pid))
-        typer.echo(f"{name} started in background.".capitalize())
+        info(f"{name} started in background.".capitalize())
     return 0
 
 
@@ -309,7 +327,7 @@ def stop_background(name: str) -> None:
         change_json(proc, delete=True)
 
 
-def change_json(proc: Process, delete: bool = False) -> none:
+def change_json(proc: Process, delete: bool = False) -> None:
     global PROCS
     if not JSON_FILE.exists():
         with open(JSON_FILE, "w") as json_file:
@@ -340,6 +358,7 @@ def tail_f(path: str, sleep_time: float = 0.5):
 
 
 if __name__ == "__main__":
+    basicConfig(level=INFO, format="%(levelname)s: %(message)s", force=True)
     if JSON_FILE.exists():
         try:
             PROCS = json.loads(JSON_FILE.read_text(encoding="utf-8"))
@@ -351,7 +370,7 @@ if __name__ == "__main__":
                 try:
                     os.kill(proc["pid"], 0)
                 except ProcessLookupError:
-                    info(f"{proc["name"]} is in JSON but not running")
+                    warning(f"{proc["name"]} is in JSON but not running")
                     change_json(Process(**proc), delete=True)
     else:
         PROCS = dict()

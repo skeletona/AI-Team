@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import re
 from sys import exit
 from html import escape
@@ -39,16 +37,12 @@ def _percent_left(used: int, limit: int) -> int:
     return int(round((1.0 - ratio) * 100))
 
 
-def load_log(task: Task | None) -> str | None:
-    if not task:
-        return None
-
-    path = CODEX_DIR / task.name / "thinking.log"
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        error(f"Error reading thinking.log: {path}")
-        return ""
+def load_log(task: Task) -> str | None:
+    if task.log.exists():
+        content = task.log.read_text(encoding="utf-8", errors="replace")
+    else:
+        warning(f"{task.name}: no log file: {task.log}")
+        return
     if len(content) > 200_000:
         return "\n\n[truncated]" + content[-200_000:]
     return content

@@ -17,15 +17,15 @@ def now() -> int:
 @dataclass
 class Task:
     id:         int
-    timestamp:  int
     name:       str
     status:     str
     points:     int
     solves:     int
     category:   str
-    tokens:     int = 0
-    flag:       str = ""
-    error:      str = ""
+    log:        Path = 0
+    tokens:     int  = 0
+    flag:       str  = ""
+    error:      str  = ""
 
 @dataclass
 class Process:
@@ -53,11 +53,13 @@ MAX_CODEX_TOKEN     = int(os.environ.get("MAX_CODEX_TOKENS") or 0)
 MODEL               = os.environ.get("MODEL")
 CODEX_COMMAND   = ["codex", "exec", "-s", "workspace-write", "-m", MODEL, "--skip-git-repo-check"]
 
-DB_PATH     = Path(os.environ.get("DB_PATH", "tasks.db"))
-TASKS_DIR   = Path(os.environ.get("TASKS_ROOT", "tasks"))
-CODEX_DIR   = Path(os.environ.get("THINKING_LOGS_DIR", "codex"))
-LOGS_DIR    = Path(os.environ.get("LOGS_DIR", "logs"))
-JSON_FILE   = Path(os.environ.get("JSON_FILE") or LOGS_DIR / "running.json")
+ROOT        = Path(__file__).resolve().parent.parent
+DB_PATH     = ROOT / os.environ.get("DB_PATH", "tasks.db")
+TASKS_DIR   = ROOT / os.environ.get("TASKS_DIR", "tasks")
+CODEX_DIR   = ROOT / os.environ.get("THINKING_LOGS_DIR", "codex")
+LOGS_DIR    = ROOT / os.environ.get("LOGS_DIR", "logs")
+JSON_FILE   = LOGS_DIR / os.environ.get("JSON_FILE", "running.json")
+CODEX_FILE  = os.environ.get("CODEX_FILE", "codex.log")
 
 FLAG_REGEX = os.environ.get("FLAG_REGEX")
 HOST = os.environ.get("FLASK_HOST", "0.0.0.0")

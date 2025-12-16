@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
+
 import sqlite3
 from pathlib import Path
 
-from src.models import DB_PATH, Task, now
+from src.models import DB_PATH, CODEX_DIR, CODEX_FILE, Task, now, error, info
 
 _INITIALIZED: set[str] = set()
 EXPECTED_COLUMNS = [
@@ -13,6 +15,7 @@ EXPECTED_COLUMNS = [
     "solves",
     "category",
     "flag",
+    "attempt",
     "tokens",
     "error",
 ]
@@ -41,12 +44,13 @@ def _create_table(conn: sqlite3.Connection) -> None:
             id        TEXT PRIMARY KEY,
             timestamp INTEGER NOT NULL,
             name      TEXT,
-            status    TEXT NOT NULL,
-            points    INTEGER NOT NULL,
+            status    TEXT,
+            points    INTEGER,
             solves    INTEGER,
             category  TEXT,
             flag      TEXT,
-            tokens    INTEGER NOT NULL,
+            attempt   INTEGER,
+            tokens    INTEGER,
             error     TEXT
         )
         """
@@ -99,39 +103,42 @@ def ensure_tasks_db(path: Path) -> None:
 
 def insert_entry(
     id: str,
-    status: str,
-    timestamp: str | None = None,
-    name: str | None = None,
-    flag: str | None = None,
-    tokens: int | None = 0,
-    error: str | None = None,
-    points: int | None = 0,
-    solves: int | None = 0,
-    category: str | None = None,
+    status:     str | None = None,
+    name:       str | None = None,
+    flag:       str | None = None,
+    tokens:     int | None = 0,
+    error:      str | None = None,
+    points:     int | None = 0,
+    solves:     int | None = 0,
+    category:   str | None = None,
+    log:        Path| None = None,
 ) -> None:
-    if status not in ("queued", "running", "solved", "failed"):
+    ensure_tasks_db(DB_PATH)
+    if status and status not in ("queued", "running", "solved", "failed"):
         error("Invalid task status insertion: %s", status)
         return
 
-    ensure_tasks_db(DB_PATH)
-    tokens = tokens or 0
-    points = points or 0
-    solves = solves or 0
-
+    if log:
+        attempt = int(str(log)[-1])
+    else:
+        attempt = 0
     stmt = """
-        INSERT INTO tasks
-            (id, timestamp, name, status, points, solves, category, flag, tokens, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            timestamp = excluded.timestamp,
-            name      = COALESCE(excluded.name, name),
-            status    = excluded.status,
-            points    = excluded.points,
-            solves    = excluded.solves,
-            category  = excluded.category,
-            flag      = excluded.flag,
-            tokens    = excluded.tokens + tokens,
-            error     = excluded.error
+        INSERT INTO tasks (
+            id, timestamp, name, status, points,
+            solves, category, flag, attempt, tokens, error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            timestamp = EXCLUDED.timestamp,
+            name      = COALESCE(EXCLUDED.name, name),
+            status    = COALESCE(EXCLUDED.status, status),
+            points    = EXCLUDED.points,
+            solves    = EXCLUDED.solves,
+            category  = EXCLUDED.category,
+            flag      = EXCLUDED.flag,
+            attempt   = COALESCE(EXCLUDED.attempt, attempt),
+            tokens    = tokens + EXCLUDED.tokens,
+            error     = EXCLUDED.error;
     """
     params = (
         id,
@@ -142,49 +149,7 @@ def insert_entry(
         solves,
         category,
         flag,
-        tokens,
-        error,
-    )
-    with _connect(DB_PATH) as conn:
-        conn.execute(stmt, params)
-
-
-def create_entry(
-    id: str,
-    status: str,
-    timestamp: str | None = None,
-    name: str | None = None,
-    flag: str | None = None,
-    tokens: int | None = 0,
-    error: str | None = None,
-    points: int | None = 0,
-    solves: int | None = 0,
-    category: str | None = None,
-) -> None:
-    if status not in ("queued", "running", "solved", "failed"):
-        error("Invalid task status insertion: %s", status)
-        return
-
-    ensure_tasks_db(DB_PATH)
-    tokens = tokens or 0
-    points = points or 0
-    solves = solves or 0
-
-    stmt = """
-        INSERT INTO tasks
-            (id, timestamp, name, status, points, solves, category, flag, tokens, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO NOTHING
-    """
-    params = (
-        id,
-        now(),
-        name,
-        status,
-        points,
-        solves,
-        category,
-        flag,
+        attempt,
         tokens,
         error,
     )
@@ -197,10 +162,9 @@ def read_entries(path: Path) -> list[Task]:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM tasks").fetchall()
-    return [
-        Task(
+
+    return [Task(
             id=row["id"],
-            timestamp=row["timestamp"],
             name=row["name"],
             status=row["status"],
             points=row["points"],
@@ -209,9 +173,8 @@ def read_entries(path: Path) -> list[Task]:
             flag=row["flag"],
             tokens=row["tokens"],
             error=row["error"],
-        )
-        for row in rows
-    ]
+            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"]}")
+        ) for row in rows]
 
 
 def move_status(path: Path, old_status: str, new_status: str) -> None:
@@ -232,15 +195,15 @@ def get_entry(path: Path, id: str) -> Task | None:
     if row is None:
         return None
     return Task(
-        id=row["id"],
-        timestamp=row["timestamp"],
-        name=row["name"],
-        status=row["status"],
-        points=row["points"],
-        solves=row["solves"],
-        category=row["category"],
-        flag=row["flag"],
-        tokens=row["tokens"],
-        error=row["error"],
-    )
+            id=row["id"],
+            name=row["name"],
+            status=row["status"],
+            points=row["points"],
+            solves=row["solves"],
+            category=row["category"],
+            flag=row["flag"],
+            tokens=row["tokens"],
+            error=row["error"],
+            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"]}")
+        )
 
