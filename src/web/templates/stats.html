@@ -102,17 +102,8 @@
                   <div class="status-top-row">
                     <div>
                       <p class="task-name">{{ item.name }}</p>
-                      {% if item.challenge_id is not none and item.id != "" %}
-                        <p class="task-hash">#{{ item.challenge_id }}</p>
-                      {% endif %}
                     </div>
                 <a class="tiny-link" href="/task/{{ item.id }}">open</a>
-                  </div>
-                  <div class="status-meta">
-                    <span class="badge badge-{{ item.status | lower }}">{{ item.status | capitalize }}</span>
-                    {% if item.timestamp %}
-                      <span>{{ item.timestamp }}</span>
-                    {% endif %}
                   </div>
                   {% if item.error %}
                     <p class="status-error">{{ item.error }}</p>

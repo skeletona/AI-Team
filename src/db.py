@@ -1,8 +1,22 @@
 import sqlite3
+from pathlib import Path
 
-from src.models import *
+from src.models import DB_PATH, Task, now
 
 _INITIALIZED: set[str] = set()
+EXPECTED_COLUMNS = [
+    "id",
+    "timestamp",
+    "name",
+    "status",
+    "points",
+    "solves",
+    "category",
+    "flag",
+    "tokens",
+    "error",
+]
+
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(
@@ -24,13 +38,16 @@ def _create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY,
+            id        INTEGER PRIMARY KEY,
             timestamp INTEGER NOT NULL,
-            name TEXT,
-            status TEXT,
-            flag TEXT,
-            tokens INTEGER NOT NULL,
-            error TEXT
+            name      TEXT,
+            status    TEXT NOT NULL,
+            points    INTEGER NOT NULL,
+            solves    INTEGER NOT NULL,
+            category  TEXT,
+            flag      TEXT,
+            tokens    INTEGER NOT NULL,
+            error     TEXT
         )
         """
     )
@@ -51,7 +68,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     else:
         existing = _column_names(conn, "tasks")
         if existing != EXPECTED_COLUMNS:
-            logging.error("SQL schema is wrong:\nExpected: %s\nActual:   %s\n", EXPECTED_COLUMNS, existing)
+            error(
+                "SQL schema is wrong:\nExpected: %s\nActual:   %s\n",
+                EXPECTED_COLUMNS,
+                existing,
+            )
     _ensure_index(conn)
 
 
@@ -77,36 +98,51 @@ def ensure_tasks_db(path: Path) -> None:
 
 
 def insert_entry(
-    id:     int,
+    id: int,
     status: str,
-    name:   str | None  = None,
-    flag:   str | None  = None,
-    tokens: int | None  = 0,
-    error:  str | None  = None,
+    timestamp: str | None = None,
+    name: str | None = None,
+    flag: str | None = None,
+    tokens: int | None = 0,
+    error: str | None = None,
+    points: int | None = 0,
+    solves: int | None = 0,
+    category: str | None = None,
 ) -> None:
     if status not in ("queued", "running", "solved", "failed"):
-        logging.error("Invalid task status insertion:", status)
+        error("Invalid task status insertion: %s", status)
         return
 
     ensure_tasks_db(DB_PATH)
-    if tokens is None:
-        tokens = 0
+    tokens = tokens or 0
+    points = points or 0
+    solves = solves or 0
 
     stmt = """
         INSERT INTO tasks
-            (id, timestamp, name, status, flag, tokens, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, timestamp, name, status, points, solves, category, flag, tokens, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-            timestamp   = excluded.timestamp,
-            name        = COALESCE(excluded.name, name),
-            status      = excluded.status,
-            flag        = excluded.flag,
-            tokens      = excluded.tokens + tokens,
-            error       = excluded.error
+            timestamp = excluded.timestamp,
+            name      = COALESCE(excluded.name, name),
+            status    = excluded.status,
+            points    = excluded.points,
+            solves    = excluded.solves,
+            category  = excluded.category,
+            flag      = excluded.flag,
+            tokens    = excluded.tokens + tokens,
+            error     = excluded.error
     """
     params = (
-        id,   int(time()),    name,
-        status,         flag,           tokens,
+        id,
+        now(),
+        name,
+        status,
+        points,
+        solves,
+        category,
+        flag,
+        tokens,
         error,
     )
     with _connect(DB_PATH) as conn:
@@ -114,32 +150,40 @@ def insert_entry(
 
 
 def create_entry(
-    id:     int,
+    id: int,
     status: str,
-    name:   str | None  = None,
-    flag:   str | None  = None,
-    tokens: int | None  = 0,
-    error:  str | None  = None,
+    timestamp: str | None = None,
+    name: str | None = None,
+    flag: str | None = None,
+    tokens: int | None = 0,
+    error: str | None = None,
+    points: int | None = 0,
+    solves: int | None = 0,
+    category: str | None = None,
 ) -> None:
     if status not in ("queued", "running", "solved", "failed"):
-        logging.error("Invalid task status insertion: %s", status)
+        error("Invalid task status insertion: %s", status)
         return
 
     ensure_tasks_db(DB_PATH)
-    if tokens is None:
-        tokens = 0
+    tokens = tokens or 0
+    points = points or 0
+    solves = solves or 0
 
     stmt = """
         INSERT INTO tasks
-            (id, timestamp, name, status, flag, tokens, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, timestamp, name, status, points, solves, category, flag, tokens, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO NOTHING
     """
     params = (
         id,
-        int(time()),
+        now(),
         name,
         status,
+        points,
+        solves,
+        category,
         flag,
         tokens,
         error,
@@ -155,13 +199,16 @@ def read_entries(path: Path) -> list[Task]:
         rows = conn.execute("SELECT * FROM tasks").fetchall()
     return [
         Task(
-            timestamp=  row["timestamp"],
-            tokens=     row["tokens"],
-            status=     row["status"],
-            error=      row["error"],
-            name=       row["name"],
-            flag=       row["flag"],
-            id=         row["id"],
+            id=row["id"],
+            timestamp=row["timestamp"],
+            name=row["name"],
+            status=row["status"],
+            points=row["points"],
+            solves=row["solves"],
+            category=row["category"],
+            flag=row["flag"],
+            tokens=row["tokens"],
+            error=row["error"],
         )
         for row in rows
     ]
@@ -181,9 +228,19 @@ def get_entry(path: Path, id: int) -> Task | None:
     ensure_tasks_db(path)
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
-        task = Task(**conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone())
-    if task:
-        return task
-    else:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone()
+    if row is None:
         return None
+    return Task(
+        id=row["id"],
+        timestamp=row["timestamp"],
+        name=row["name"],
+        status=row["status"],
+        points=row["points"],
+        solves=row["solves"],
+        category=row["category"],
+        flag=row["flag"],
+        tokens=row["tokens"],
+        error=row["error"],
+    )
 

@@ -2,8 +2,11 @@ from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
 from pathlib import Path
 from time import time, sleep
-import logging
+from logging import info, error, warning, basicConfig, INFO
 import os
+
+def now() -> int:
+    return int(time())
 
 @dataclass
 class Task:
@@ -11,6 +14,9 @@ class Task:
     timestamp:  int
     name:       str
     status:     str
+    points:     int
+    solves:     int
+    category:   str
     tokens:     int = 0
     flag:       str = ""
     error:      str = ""
@@ -18,45 +24,32 @@ class Task:
 
 load_dotenv()
 
-CTFD_URL = os.environ["CTFD_URL"].rstrip("/")
-TEAM_EMAIL = os.environ.get("AI_TEAM_EMAIL")
-TEAM_PASSWORD = os.environ.get("AI_TEAM_PASSWORD")
-TEAM_NAME = os.environ.get("AI_TEAM_NAME")
-
-DB_PATH = Path(os.environ.get("DB_PATH", "tasks.db"))
-TASKS_DIR = Path(os.environ.get("TASKS_ROOT", "tasks"))
-CODEX_DIR = Path(os.environ.get("THINKING_LOGS_DIR", "codex"))
-LOGS_DIR = Path(os.environ.get("LOGS_DIR", "logs"))
-
-MAX_ATTACHMENT_BYTES = int(os.environ.get("MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
-TARGET_POINTS = int(os.environ.get("TARGET_POINTS"))
-MAX_CODEX_ATTEMPTS = int(os.environ.get("MAX_CODEX_ATTEMPTS", "3"))
-CODEX_TIMEOUT = int(os.environ.get("CODEX_TIMEOUT")) * 60
-HOST = os.environ.get("STATS_HOST", "127.0.0.1")
-PORT = int(os.environ.get("STATS_PORT", "8000"))
-MAX_CODEX_WORKERS = int(os.environ.get("MAX_CODEX_WORKERS"))
-
+CTFD_URL        = os.environ["CTFD_URL"].rstrip("/")
+TEAM_EMAIL      = os.environ.get("AI_TEAM_EMAIL")
+TEAM_PASSWORD   = os.environ.get("AI_TEAM_PASSWORD")
+TEAM_NAME       = os.environ.get("AI_TEAM_NAME")
 FLAG_FORMAT = os.environ.get("FLAG_FORMAT")
+
+MAX_ATTACHMENT_SIZE = int(os.environ.get("MAX_ATTACHMENT_SIZE", 10)) * 1024 * 1024
+MAX_CODEX_ATTEMPTS  = int(os.environ.get("MAX_CODEX_ATTEMPTS", "3"))
+MAX_CODEX_WORKERS   = int(os.environ.get("MAX_CODEX_WORKERS"))
+CODEX_TIMEOUT       = int(os.environ.get("CODEX_TIMEOUT") or 60) * 60
+TARGET_POINTS       = int(os.environ.get("TARGET_POINTS")) or 0
+MAX_CODEX_TOKEN     = int(os.environ.get("MAX_CODEX_TOKENS") or 0)
+MODEL               = os.environ.get("MODEL")
+CODEX_COMMAND   = ["codex", "exec", "-s", "danger-full-access", "-m", MODEL, "--skip-git-repo-check"]
+
+DB_PATH     = Path(os.environ.get("DB_PATH", "tasks.db"))
+TASKS_DIR   = Path(os.environ.get("TASKS_ROOT", "tasks"))
+CODEX_DIR   = Path(os.environ.get("THINKING_LOGS_DIR", "codex"))
+LOGS_DIR    = Path(os.environ.get("LOGS_DIR", "logs"))
+JSON_FILE   = Path(os.environ.get("JSON_FILE")) or LOGS_DIR / "running.json"
+
 FLAG_REGEX = os.environ.get("FLAG_REGEX")
 
-HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = os.environ.get("PORT", 8000)
+HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
+PORT = os.environ.get("FLASK_PORT", 8000)
 DEBUG_FLASK = os.environ.get("DEBUG_FLASK", False)
-
-_SOLVED_CACHE: dict[str, object] = {"ts": 0.0, "ids": set()}
-SOLVED_CACHE_SECONDS = int(os.environ.get("SOLVED_CACHE_SECONDS", "30"))
-DEFAULT_CODEX_COMMAND = ["codex", "exec", "-s", "danger-full-access", "-m", "gpt-5.1-codex-mini", "--skip-git-repo-check"]
-STATS_TEMPLATE_ENV = os.environ.get("STATS_TEMPLATE")
-STATS_TEMPLATE = Path(STATS_TEMPLATE_ENV) if STATS_TEMPLATE_ENV else None
-SOLVES_CACHE_SECONDS = int(os.environ.get("SOLVES_CACHE_SECONDS", "30"))
-CHALLENGES_CACHE_SECONDS = int(os.environ.get("CHALLENGES_CACHE_SECONDS", "60"))
-
-TOKEN_LIMIT_5H = int(os.environ.get("TOKEN_LIMIT_5H", "250000"))
-TOKEN_LIMIT_WEEK = int(os.environ.get("TOKEN_LIMIT_WEEK", "1000000"))
-CONTEXT_WINDOW_TOKENS = int(os.environ.get("CONTEXT_WINDOW_TOKENS", "272000"))
-CONTEXT_WINDOW_USED_FALLBACK = os.environ.get("CONTEXT_WINDOW_USED")
-CODEX_BUDGET_COMMAND = os.environ.get("CODEX_BUDGET_COMMAND", "").strip()
-EXPECTED_COLUMNS = ["id", "timestamp", "name", "status", "flag", "tokens", "error"]
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -66,8 +59,4 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-_BUDGET_CACHE: dict[str, object] = {"ts": 0.0, "lines": []}
-_BUDGET_CACHE_TTL_SECONDS = 15.0
-_CHALLENGES_CACHE: dict[str, object] = {"ts": 0.0, "by_id": {}}
 

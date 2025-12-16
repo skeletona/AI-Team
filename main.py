@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 try:
-    from src import *
-    from typing import Optional
+    from signal import SIGTERM, SIGKILL
+    from sys import executable
+    from shutil import rmtree
     import subprocess
-    import shutil
-    import json
-    import sys
     import typer
-    import signal
+    import json
+
+    from src import *
 
 except ModuleNotFoundError as e:
     print("Run pip install -r requirements.txt\n")
@@ -17,7 +17,6 @@ except ModuleNotFoundError as e:
 
 
 ROOT = Path(__file__).resolve().parent
-RUNNING_FILE = LOGS_DIR / "running.json"
 PROCS = dict()
 GRACE_TIME = 5
 
@@ -38,14 +37,10 @@ class Process:
     log:        Path
 
 
-def read_json() -> dict:
-    if RUNNING_FILE.exists():
-        return json.loads(RUNNING_FILE.read_text(encoding="utf-8"))
-    else:
-        return dict()
 
 
 @app.command("run")
+@app.command("start", hidden=True)
 def run(
     services: list[str] = typer.Argument(
         None,
@@ -74,8 +69,7 @@ def run(
         services = ["download", "website", "codex"]
 
     if "download" in services:
-        typer.echo("Downloading tasks …")
-        if download.main() != 0:
+        if ctfd.main() != 0:
             raise typer.Exit(code=1)
             typer.echo("download done")
     if "website" in services:
@@ -201,15 +195,16 @@ def clean(
         things = ["tasks", "codex", "logs", "database"]
 
     if "tasks" in things:
-        shutil.rmtree(TASKS_DIR)
+        rmtree(TASKS_DIR, ignore_errors=True)
         typer.echo(f"Deleted tasks directory: {TASKS_DIR}")
     if "codex" in things:
-        shutil.rmtree(CODEX_DIR)
+        rmtree(CODEX_DIR, ignore_errors=True)
         typer.echo(f"Deleted codex directory: {CODEX_DIR}")
     if "logs" in things:
-        shutil.rmtree(LOGS_DIR)
+        rmtree(LOGS_DIR, ignore_errors=True)
         typer.echo(f"Deleted logs directory: {LOGS_DIR}")
-    if "database" in "all":
+    if "database" in things:
+        os.remove(DB_PATH)
         typer.echo(f"Deleted: {DB_PATH}")
 
 
@@ -244,7 +239,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
         typer.echo("Attaching to {name} …")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [sys.executable, "-m", "src." + name],
+                [executable, "-m", "src." + name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -262,7 +257,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
         typer.echo(f"Starting {name} …")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [sys.executable, "-m", "src." + name],
+                [executable, "-m", "src." + name],
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -280,7 +275,7 @@ def stop_background(name: str) -> None:
     proc = Process(**PROCS[name])
 
     try:
-        os.kill(proc.pid, signal.SIGTERM)
+        os.kill(proc.pid, SIGTERM)
         typer.echo(f"Stopping {name}")
 
         waited = 0
@@ -294,7 +289,7 @@ def stop_background(name: str) -> None:
             waited += 0.5
 
         typer.echo(f"{name} did not exit gracefully in {GRACE_TIME} seconds. Killing.")
-        os.kill(proc.pid, signal.SIGKILL)
+        os.kill(proc.pid, SIGKILL)
 
     except ProcessLookupError:
         typer.echo(f"No {name} process found")
@@ -306,19 +301,19 @@ def stop_background(name: str) -> None:
 
 
 def change_json(proc: Process, delete: bool = False) -> none:
-    if not RUNNING_FILE.exists():
-        with open(RUNNING_FILE, "w") as json_file:
+    if not JSON_FILE.exists():
+        with open(JSON_FILE, "w") as json_file:
             json.dump({"sus": "sas"}, json_file, indent=2)
         data: dict[str, Process] = {}
     else:
-        data = json.loads(RUNNING_FILE.read_text(encoding="utf-8"))
+        data = json.loads(JSON_FILE.read_text(encoding="utf-8"))
 
     if delete:
         del data[proc.name]
     else:
         data[proc.name] = asdict(proc)
 
-    with open(RUNNING_FILE, "w") as json_file:
+    with open(JSON_FILE, "w") as json_file:
         json.dump(data, json_file, indent=2)
 
 
@@ -334,5 +329,9 @@ def tail_f(path: str, sleep_time: float = 0.5):
 
 
 if __name__ == "__main__":
-    PROCS = read_json()
+    if JSON_FILE.exists():
+        PROCS = json.loads(JSON_FILE.read_text(encoding="utf-8"))
+    else:
+        PROCS = dict()
+
     app()

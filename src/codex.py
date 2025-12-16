@@ -39,7 +39,7 @@ def build_flag_regex(flag_regex: str | None, flag_format: str) -> re.Pattern:
         except re.error as exc:
             raise ValueError(f"FLAG_FORMAT {spec!r} is not a valid format. Example: testCTF{{}}") from exc
     
-    logging.info(f"FLAG_REGEX: {flag_regex}")
+    info(f"FLAG_REGEX: {flag_regex}")
     return flag_regex
 
 FLAG_RE = build_flag_regex(FLAG_REGEX, FLAG_FORMAT)
@@ -60,7 +60,7 @@ def extract_tokens(output: str = "", task: Task = None) -> int:
         except FileNotFoundError:
             return 0
     else:
-        logging.error("extract_tokens has invalid parameters")
+        error("extract_tokens has invalid parameters")
         return 0
 
     match = re.search(r"tokens used\s*([\d,]+)", clean, flags=re.IGNORECASE)
@@ -68,7 +68,7 @@ def extract_tokens(output: str = "", task: Task = None) -> int:
         if match:
             return int(match.group(1).replace(",", ""))
     finally:
-        logging.error("Failed to extract_tokens")
+        error("Failed to extract_tokens")
         return 0
 
 
@@ -90,7 +90,7 @@ def persist_task_logs(task: Task, output: str) -> None:
         logs_root.mkdir(parents=True, exist_ok=True)
         (logs_root / "thinking.log").write_text(extract_thinking(output), encoding="utf-8")
     except OSError as exc:
-        logging.warning("failed to write logs under %s: %s", task.name, exc)
+        warning("failed to write logs under %s: %s", task.name, exc)
 
 
 def run_codex_with_logs(
@@ -103,7 +103,6 @@ def run_codex_with_logs(
     output_log = logs_root / "thinking.log"
     completed_normally = False
 
-    timeout = None if CODEX_TIMEOUT <= 0 else CODEX_TIMEOUT
     with output_log.open("wb") as fh:
         proc = subprocess.Popen(
             command,
@@ -115,7 +114,7 @@ def run_codex_with_logs(
         if task.id is not None:
             RUNNING_CODEX[task.id] = proc
         try:
-            proc.wait(timeout=timeout)
+            proc.wait(timeout=CODEX_TIMEOUT)
             completed_normally = True
         except Excepion:
             completed_normally = False
@@ -126,7 +125,7 @@ def run_codex_with_logs(
     output = output_log.read_text(encoding="utf-8", errors="ignore")
     tokens = extract_tokens(output=output)
     if tokens:
-        logging.info(f"tokens used: {tokens}")
+        info(f"tokens used: {tokens}")
     return output
 
 
@@ -136,8 +135,8 @@ def run_codex(
 ) -> str:
     task_dir = TASKS_DIR / task.name
 
-    logging.info("running codex for %s", task.name)
-    command = DEFAULT_CODEX_COMMAND + [prompt]
+    info("running codex for %s", task.name)
+    command = CODEX_COMMAND + [prompt]
     return run_codex_with_logs(command, task)
 
 
@@ -182,10 +181,10 @@ def mark_all_running_failed(reason: str = "interrupted") -> None:
 def process_task(task: Task) -> int:
     session = ctfd.create_session()
     if session is None:
-        logging.warning("could not login to CTFd; running without submissions", CTFD_URL)
-    elif task.id in ctfd.solved_ids_cached(session):
+        warning("could not login to CTFd; running without submissions", CTFD_URL)
+    elif task.id in [task for task in ctfd.fetch_tasks(session) if task.status == "solved"]:
         db.insert_entry(task.id, "solved", error="solved by a human")
-        logging.info("skipping %s (%s): solved while queued", task.name, task.id)
+        info("skipping %s (%s): solved while queued", task.name, task.id)
         return 0
 
     prompt = build_codex_prompt(task)
@@ -207,11 +206,11 @@ def process_task(task: Task) -> int:
         validated = False
         for flag in reversed(flags):
             if submit_flag(session, tasl.id, flag):
-                logging.info(f"successfull flag found for {task.name}: {flag}")
+                info(f"successfull flag found for {task.name}: {flag}")
                 db.insert_entry(task.id, "done", flag=flag, tokens=extract_tokens(output=output))
                 return 0
             else:
-                logging.info(f"incorrect flag found for {task.name}: {candidate}")
+                info(f"incorrect flag found for {task.name}: {candidate}")
 
         prompt = (
             prompt
@@ -219,19 +218,19 @@ def process_task(task: Task) -> int:
             " Keep working and print ONLY the correct final flag."
         )
 
-    logging.warning(f"max attempts reached for {task.name}")
+    warning(f"max attempts reached for {task.name}")
     db.insert_entry(task.id, "failed", tokens=extract_tokens(output=last_output), error="max attempts reached")
     return 0
 
 
 def run_tasks():
     if not TASKS_DIR.exists():
-        logging.error(f"task directory does not exist: {TASKS_DIR}")
+        error(f"task directory does not exist: {TASKS_DIR}")
         return 1
 
     pending: list[Task] = db.read_entries(DB_PATH)
     if not pending:
-        logging.error("no tasks in the database")
+        error("no tasks in the database")
         return 1
 
     shuffle(pending)
@@ -254,9 +253,9 @@ def run_tasks():
                 task = future_to_task.pop(f)
                 f.result()
     except KeyboardInterrupt:
-        logging.info("Stopping signal recieved")
+        info("Stopping signal recieved")
     finally:
-        logging.info("Exiting")
+        info("Exiting")
         for fut, task in future_to_task.items():
             db.insert_entry(task.id, "failed", tokens=extract_tokens(task=task), error="interrupted")
             fut.cancel()
@@ -264,7 +263,7 @@ def run_tasks():
         for proc in RUNNING_CODEX.values():
             proc.kill()
         executor.shutdown(wait=True)
-        logging.info("Exited")
+        info("Exited")
 
 
 def handle_sigterm(signum, frame):
@@ -273,9 +272,9 @@ def handle_sigterm(signum, frame):
 
 def main():
     signal.signal(signal.SIGTERM, handle_sigterm)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
+    basicConfig(level=INFO, format="%(levelname)s: %(message)s", force=True)
     db.move_status(DB_PATH, "running", "failed")
-    logging.info("Starting Codex worker …")
+    info("Starting Codex worker …")
     run_tasks()
 
 

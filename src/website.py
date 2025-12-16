@@ -52,7 +52,7 @@ def load_log(task: Task) -> str | None:
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
-        logging.error(f"Error reading thinking.log: {path}")
+        error(f"Error reading thinking.log: {path}")
         return None
     if len(content) > 200_000:
         return "\n\n[truncated]" + content[-200_000:]
@@ -184,7 +184,7 @@ def task_message(task_id: int) -> Response:
 
 
 def main():
-    logging.info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
+    info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
     app.run(host=HOST, port=PORT, debug=DEBUG_FLASK, use_reloader=False)
 
 
