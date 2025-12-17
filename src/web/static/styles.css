@@ -433,31 +433,40 @@ body {
 
 .detail-view {
   margin-top: 2rem;
+  height: 100%;
 }
 
 .detail-view .cards-wrapper {
   grid-template-columns: 1fr;
+  height: 100%;
 }
 
 .detail-terminal-shell {
-  min-height: calc(100vh - 180px);
+  height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: center;
 }
 
 .detail-thinking-card {
   padding: 2rem;
-  min-height: calc(100% - 10px);
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  flex-grow: 1;
 }
 
 .detail-thinking-content {
-  min-height: 70vh;
-  max-height: none;
-  flex: 1;
+  flex-grow: 1;
+  overflow: auto;
+  background: #010410;
+  border-radius: 8px;
+  padding: 1rem;
+  border: 1px solid var(--border);
+}
+
+.detail-thinking-content pre[data-thinking-target] {
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .detail-empty {
@@ -467,7 +476,7 @@ body {
 .thinking-card {
   background: rgba(15, 23, 42, 0.95);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 16px;
   padding: 1.5rem;
   box-shadow: 0 25px 45px rgba(2, 6, 23, 0.7);
 }
@@ -497,7 +506,6 @@ body {
   font-size: 0.9rem;
   line-height: 1.6;
   overflow-y: auto;
-  max-height: 280px;
 }
 
 .flag-pill {
@@ -519,9 +527,30 @@ body {
   color: var(--muted);
 }
 
-a {
-  color: inherit;
+
+.status-item {
+  background: rgba(2, 6, 23, 0.5);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  text-decoration: none; /* Make the entire card a clickable link */
+  transition: transform 0.2s ease, border-color 0.2s ease;
+  color: var(--text); /* Ensure text color is inherited or set appropriately */
 }
+
+.status-item:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent-2);
+}
+
+.status-item:hover .task-name {
+  color: var(--accent-2);
+}
+
+
 
 @media (max-width: 768px) {
   .hero {

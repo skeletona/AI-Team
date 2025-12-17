@@ -19,7 +19,8 @@
     <main class="page-shell">
       <header class="hero">
         <div class="hero-copy">
-          <h1>AI Team dashboard</h1>
+          <h1>AI Team Dashboard</h1>
+          <p class="hero-subtitle">Real-time stats and task status</p>
         </div>
       </header>
 
@@ -28,31 +29,25 @@
           <article class="summary-card">
             <p class="label">Runs</p>
             <p class="value">{{ runs | default(0) }}</p>
-            <p class="hint">logged attempts</p>
+            <p class="hint">Logged attempts</p>
           </article>
           <article class="summary-card">
             <p class="label">Flags</p>
             <p class="value">{{ flags | default(0) }}</p>
-            <p class="hint">unique captures</p>
+            <p class="hint">Unique captures</p>
           </article>
           <article class="summary-card">
             <p class="label">Tokens</p>
             <p class="value">{{ tokens | default(0) }}</p>
-            <p class="hint">spent so far</p>
+            <p class="hint">Spent so far</p>
           </article>
         </div>
 
         <article class="budget-card">
           <header>
             <h2>Budget Watch</h2>
+            <p class="hint">Current token usage</p>
           </header>
-          {% if budgets.lines %}
-            <div class="budget-lines">
-              {% for line in budgets.lines %}
-                <p>{{ line }}</p>
-              {% endfor %}
-            </div>
-          {% endif %}
           <div class="budget-bars">
             {% if budgets.limit_5h %}
               {% set tokens_5h = budgets.tokens_5h | default(0) %}
@@ -61,7 +56,7 @@
               <div class="budget-row">
                 <div class="budget-row-label">
                   <span>5h limit</span>
-                  <span>{{ tokens_5h | round }} / {{ limit_5h }}</span>
+                  <span>{{ "%.2f"|format(fill_5h) }}%</span>
                 </div>
                 <div class="budget-track">
                   <div class="budget-fill" style="width: {{ fill_5h }}%"></div>
@@ -75,7 +70,7 @@
               <div class="budget-row">
                 <div class="budget-row-label">
                   <span>Weekly limit</span>
-                  <span>{{ tokens_week | round }} / {{ limit_week }}</span>
+                  <span>{{ "%.2f"|format(fill_week) }}%</span>
                 </div>
                 <div class="budget-track">
                   <div class="budget-fill" style="width: {{ fill_week }}%"></div>
@@ -86,41 +81,40 @@
         </article>
       </section>
 
-      <section class="status-grid">
-        {% macro status_section(title, items, hint_text, extra_class="") %}
-          <article class="status-panel {{ extra_class }}">
-            <header>
-              <div>
+      <section class="thinking-stack">
+        <header>
+          <h2>Task Status</h2>
+        </header>
+        <div class="status-grid">
+          {% macro status_panel(title, items, hint_text) %}
+            <article class="status-panel">
+              <header>
                 <h3>{{ title }}</h3>
-                <p class="hint">{{ hint_text }}</p>
+                <span class="status-count">{{ items | length }}</span>
+              </header>
+              <p class="hint">{{ hint_text }}</p>
+              <div class="status-items">
+                {% if items %}
+                  {% for item in items %}
+                    <a href="/task/{{ item.id }}" class="status-item" data-status="{{ item.status | lower }}">
+                      <div class="status-top-row">
+                        <p class="task-name">{{ item.name }}</p>
+                      </div>
+                    </a>
+                  {% endfor %}
+                {% else %}
+                  <p class="status-empty">No {{ title | lower }} tasks.</p>
+                {% endif %}
               </div>
-              <span class="status-count">{{ items | length }}</span>
-            </header>
-            <div class="status-items">
-              {% for item in items %}
-                <div class="status-item" data-status="{{ item.status | lower }}">
-                  <div class="status-top-row">
-                    <div>
-                      <p class="task-name">{{ item.name }}</p>
-                    </div>
-                <a class="tiny-link" href="/task/{{ item.id }}">open</a>
-                  </div>
-                  {% if item.error %}
-                    <p class="status-error">{{ item.error }}</p>
-                  {% endif %}
-                </div>
-              {% else %}
-                <p class="status-empty">No {{ title | lower }} yet.</p>
-              {% endfor %}
-            </div>
-          </article>
-        {% endmacro %}
+            </article>
+          {% endmacro %}
 
-        {{ status_section("Queued", cards["queued"], "waiting for execution", "panel-queue") }}
-        {{ status_section("Running", cards["running"], "currently burning tokens", "panel-running") }}
-        {{ status_section("Solved", cards["solved"], "victories", "panel-solved") }}
-        {{ status_section("Failed", cards["failed"], "needs attention", "panel-failed") }}
+          {{ status_panel("Queued", cards["queued"], "Waiting for execution") }}
+          {{ status_panel("Running", cards["running"], "Currently burning tokens") }}
+          {{ status_panel("Solved", cards["solved"], "Victories") }}
+          {{ status_panel("Failed", cards["failed"], "Needs attention") }}
+        </div>
       </section>
-      </main>
+    </main>
   </body>
 </html>

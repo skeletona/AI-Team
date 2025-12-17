@@ -34,20 +34,24 @@
         </div>
       </header>
 
-      <section class="detail-view detail-terminal-shell">
-        <div class="thinking-content detail-thinking-content">
-          <pre data-thinking-target>{{ text }}</pre>
+      <section class="detail-view">
+        <div class="thinking-card detail-thinking-card">
+          <header class="thinking-card-header">
+            <h2 class="task-name">Live Terminal</h2>
+          </header>
+          <div class="detail-thinking-content" data-thinking-scroll>
+            <pre data-thinking-target>{{ text }}</pre>
+          </div>
         </div>
       </section>
     </main>
 
     <script>
-      const thinkingContainer = document.querySelector('[data-thinking-target]');
-      const thinkingStatus = document.querySelector('[data-thinking-status]');
+      const thinkingContainer = document.querySelector('[data-thinking-scroll]');
+      const thinkingTarget = document.querySelector('[data-thinking-target]');
       const taskId = {{ task_id }};
 
       function scrollToBottom() {
-        console.log("sus")
         thinkingContainer.scrollTop = thinkingContainer.scrollHeight;
       }
       window.addEventListener('load', scrollToBottom);
@@ -58,21 +62,18 @@
       const ws = new WebSocket(wsUrl);
 
       ws.onmessage = function(event) {
-        thinkingContainer.textContent += event.data;
-        thinkingContainer.scrollTop = thinkingContainer.scrollHeight;
+        thinkingTarget.textContent += event.data;
         scrollToBottom();
       };
 
       ws.onopen = function() {
         console.log("WebSocket connected.");
-        // Sending a plain text message as the server expects it
         ws.send("start_log_stream:{{ task_id }}");
       };
 
       window.addEventListener('beforeunload', function() {
         if (ws.readyState === WebSocket.OPEN) {
           ws.close();
-          console.log("WebSocket closed.");
         }
       });
 
