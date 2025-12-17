@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
 import sqlite3
-from pathlib import Path
 
-from src.models import DB_PATH, CODEX_DIR, CODEX_FILE, Task, now, error, info
+from src.models import *
 
 _INITIALIZED: set[str] = set()
 EXPECTED_COLUMNS = [
@@ -42,7 +41,7 @@ def _create_table(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS tasks (
             id        TEXT PRIMARY KEY,
-            timestamp INTEGER NOT NULL,
+            timestamp INTEGER,
             name      TEXT,
             status    TEXT,
             points    INTEGER,
@@ -103,13 +102,15 @@ def ensure_tasks_db(path: Path) -> None:
 
 def insert_entry(
     id: str,
+    tokens:     int        = 0,
+    points:     int        = 0,
+    solves:     int        = 0,
+    attempt:    bool       = False,
+    timestamp:  int | None = None,
     status:     str | None = None,
     name:       str | None = None,
     flag:       str | None = None,
-    tokens:     int | None = 0,
     error:      str | None = None,
-    points:     int | None = 0,
-    solves:     int | None = 0,
     category:   str | None = None,
     log:        Path| None = None,
 ) -> None:
@@ -118,10 +119,6 @@ def insert_entry(
         error("Invalid task status insertion: %s", status)
         return
 
-    if log:
-        attempt = int(str(log)[-1])
-    else:
-        attempt = 0
     stmt = """
         INSERT INTO tasks (
             id, timestamp, name, status, points,
@@ -136,8 +133,8 @@ def insert_entry(
             solves    = EXCLUDED.solves,
             category  = EXCLUDED.category,
             flag      = EXCLUDED.flag,
-            attempt   = COALESCE(EXCLUDED.attempt, attempt),
-            tokens    = tokens + EXCLUDED.tokens,
+            attempt   = EXCLUDED.attempt,
+            tokens    = EXCLUDED.tokens,
             error     = EXCLUDED.error;
     """
     params = (
@@ -149,7 +146,7 @@ def insert_entry(
         solves,
         category,
         flag,
-        attempt,
+        int(attempt),
         tokens,
         error,
     )
@@ -162,13 +159,14 @@ def read_entries(path: Path) -> list[Task]:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM tasks").fetchall()
-
+    
     return [Task(
             id=row["id"],
             name=row["name"],
             status=row["status"],
             points=row["points"],
             solves=row["solves"],
+            timestamp=row["timestamp"],
             category=row["category"],
             flag=row["flag"],
             tokens=row["tokens"],
@@ -196,6 +194,7 @@ def get_entry(path: Path, id: str) -> Task | None:
         return None
     return Task(
             id=row["id"],
+            timestamp=row["timestamp"],
             name=row["name"],
             status=row["status"],
             points=row["points"],
@@ -206,4 +205,50 @@ def get_entry(path: Path, id: str) -> Task | None:
             error=row["error"],
             log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"]}")
         )
+
+
+def change_task(
+    task:       Task,
+    status:     str | None = None,
+    error:      str | None = None,
+    name:       str | None = None,
+    timestamp:  int | None = None,
+    flag:       str | None = None,
+    category:   str | None = None,
+    log:        Path| None = None,
+    attempt:    int | None = None,
+    tokens:     int | None = None,
+    points:     int | None = None,
+    solves:     int | None = None,
+) -> Task:
+    updates: dict[str, object] = {}
+    if (category and category != task.category) or (name and name != task.name):
+        raise ValueError("Cannot change category or name of a task")
+    
+    if attempt:
+        info([CODEX_DIR, task.name, CODEX_FILE, attempt])
+        log = CODEX_DIR / task.name / f"{CODEX_FILE}.{attempt}"
+    elif log:
+        attempt = int(str(log).split(".")[-1])
+
+    if category   is not None: updates["category"]  = category
+    if points     is not None: updates["points"]    = points
+    if status     is not None: updates["status"]    = status
+    if solves     is not None: updates["solves"]    = solves
+    if error      is not None: updates["error"]     = error
+    if flag       is not None: updates["flag"]      = flag
+    if name       is not None: updates["name"]      = name
+    if log        is not None: updates["log"]       = log
+
+    debug(f"{task.name}: Updating: {updates}")
+    if tokens:
+        updates["tokens"]  = task.tokens  + tokens
+    updates["timestamp"] = now()
+    new_task = replace(task, **updates)
+
+    if attempt:
+        updates["attempt"] = attempt
+
+    insert_entry(task.id, **updates)
+    return new_task
 

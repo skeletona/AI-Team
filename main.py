@@ -3,11 +3,14 @@
 try:
     from sys import executable
     from shutil import rmtree
-    import subprocess
     import typer
-    import json
 
-    from src import *
+    from src import (
+        JSON_FILE, DB_PATH, LOGS_DIR, TASKS_DIR, CODEX_DIR,
+        info, error, warning, asdict, json, subprocess,
+        Path, os, Process, basicConfig, INFO,
+    )
+    from src import codex, website, ctfd
 
 except ModuleNotFoundError as e:
     print("Run pip install -r requirements.txt\n")
@@ -148,7 +151,7 @@ def restart(
     if not services:
         services = ["website", "codex"]
 
-    if "website" in services:
+    if "website" in services or "web in services":
         stop_background("website")
         if "website" in PROCS:
             del PROCS["website"]
@@ -217,7 +220,8 @@ def sql():
             attempt,
             tokens,
             error
-            FROM tasks;'''
+            FROM tasks
+            ORDER BY timestamp;'''
          ])
 
 

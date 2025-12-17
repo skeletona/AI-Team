@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
+from src.models import *
+from src import db, ctfd
+
 from random import shuffle
 import re
-import subprocess
-from typing import Any, Mapping, Optional, Sequence
 import concurrent.futures
 
-from src.models import *
-from . import db, ctfd
 
 STOP_EVENT = False
 RUNNING_CODEX: dict[str: subprocess.Popen] = {}
@@ -22,13 +21,14 @@ def build_flag_regex(flag_regex: str | None, flag_format: str | None) -> re.Patt
     else:
         escaped_spec = re.escape(flag_format)
         placeholder = re.escape("{}")
-        flag_regex = escaped_spec.replace(placeholder, r"\{[^}]+\}")
+        flag_regex = escaped_spec.replace(placeholder, r"\{[^}]{5,}+\}")
         try:
             flag_regex = re.compile(flag_regex)
         except re.error as exc:
             raise ValueError(f"FLAG_FORMAT {spec!r} is not a valid format. Example: testCTF{{}}") from exc
     
     return flag_regex
+
 
 FLAG_RE = build_flag_regex(FLAG_REGEX, FLAG_FORMAT)
 
@@ -49,30 +49,18 @@ def extract_thinking(output: str) -> str:
     return "\n".join(snippet).rstrip()
 
 
-def write_logs(task: Task, output: str, attempt: int) -> None:
-    try:
-        logs_root = CODEX_DIR / task.name
-        logs_root.mkdir(parents=True, exist_ok=True)
-        task.log = logs_root / task.name / f"{CODEX_FILE}.{attempt}"
-        info(task.log)
-        task.log.write_text(output, encoding="utf-8")
-    except OSError as exc:
-        warning("failed to write logs under %s: %s", task.name, exc)
-
-
 def run_codex(task: Task, prompt: str) -> str:
     command = CODEX_COMMAND + [prompt]
     completed_normally = False
 
     task.log.parent.mkdir(parents=True, exist_ok=True)
-
+    
     with task.log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
             cwd=TASKS_DIR / task.name,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=dict(os.environ),
             text=True,
             bufsize=1,
         )
@@ -82,16 +70,18 @@ def run_codex(task: Task, prompt: str) -> str:
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
+                if len(line) > 1000:
+                    line = line[:1000] + "[truncated]"
                 fh.write(line)
                 fh.flush()
                 lines.append(line)
             proc.wait(timeout=CODEX_TIMEOUT)
-            completed_normally = True
         except Exception:
-            completed_normally = False
+            exception(e)
+            proc.kill()
+            proc.wait(timeout=5)
         finally:
-            if task.id is not None:
-                RUNNING_CODEX.pop(task.id, None)
+            RUNNING_CODEX.pop(task.id, None)
 
     output = "".join(lines)
     return output
@@ -107,20 +97,19 @@ def local_attachment_names(task: Task) -> list[str]:
     )
 
 
-def build_codex_prompt(task: Task, instance_url: str | None = None) -> str:
+def build_codex_prompt(task: Task, instance: bool) -> str:
     context_path = TASKS_DIR / task.name / "codex_context.txt"
     if context_path.exists():
         context = context_path.read_text(encoding="utf-8", errors="replace").strip()
     else:
         context = ""
 
-    parts = [
-        "Solve this Jeopardy CTF challenge inside the current directory. Do not read anything above that directory.",
-        f"Flag format (regex): {FLAG_FORMAT}",
-        "Do not install new tools or use sudo.",
-    ]
-    if instance_url:
-        parts.append(f"The challenge is available at this URL: {instance_url}")
+    parts = CODEX_PROMPT
+    if instance:
+        parts += [f"Instance is available. Run instance {task.id} [command]",
+                   "Possible commands: start, stop, info, renew",
+                   "Do not stop instance before exiting."
+        ]
     if context:
         parts.extend(
             [
@@ -131,14 +120,15 @@ def build_codex_prompt(task: Task, instance_url: str | None = None) -> str:
     return "\n".join(parts)
 
 
-def mark_all_running_failed(reason: str = "interrupted") -> None:
+def mark_all_running_failed(reason: str = "marked as failed") -> None:
     entries = db.read_entries(DB_PATH)
     for task in entries:
         if entry.status == "running":
-            db.insert_entry(task.id, "failed", error=reason)
+            db.change_task(task, "failed", reason)
 
 
 def process_task(task: Task) -> int:
+    """Give MAX_CODEX_ATTEMPTS attempts for one task"""
     session = ctfd.create_session()
 
     task_dir = TASKS_DIR / task.name
@@ -154,82 +144,73 @@ def process_task(task: Task) -> int:
         warning("could not login to CTFd; running without submissions", CTFD_URL)
         if is_docker_task:
             error("Cannot process docker task without a session.")
-            db.insert_entry(task.id, "failed", error="login failed")
+            db.change_task(task, "failed", "login failed")
             return 1
     elif task.id in [t.id for t in ctfd.fetch_tasks(session) if t.status == "solved"]:
-        db.insert_entry(task.id, "solved", error="solved by a human")
+        db.change_task(task, "solved", "solved by a human")
         info("skipping %s (%s): solved while queued", task.name, task.id)
         return 0
 
-    instance_url = None
+    instance = None
     try:
-        if is_docker_task:
-            instance_url = ctfd.get_instance_url(session, task.id)
-            if not instance_url:
-                info(f"No running instance for {task.name}, launching one.")
-                instance_url = ctfd.launch_instance(session, task.id)
+        if CTFD_OWL:
+            instance = ctfd.start_instance(session, task.id)
+            if instance:
+                info(f"{task.name}: Has a ctfd_owl instance")
 
-            if instance_url:
-                info(f"Instance for {task.name} is at: {instance_url}")
-            else:
-                warning(f"Failed to get or launch instance for {task.name}")
+        prompt = build_codex_prompt(task, instance)
+        start_attempt = int(str(task.log).split(".")[-1])
 
-        prompt = build_codex_prompt(task, instance_url)
-        db.insert_entry(task.id, "running")
-        last_output = ""
-
-        for attempt in range(1, MAX_CODEX_ATTEMPTS + 1):
+        for attempt in range(start_attempt + 1, start_attempt + MAX_CODEX_ATTEMPTS + 1):
             if STOP_EVENT:
                 return
-            
-            info(f"running codex for {task.name} ({attempt})")
 
-            try:
-                output = run_codex(task, prompt)
-            except FileNotFoundError as e:
-                error(e)
-                db.insert_entry(task.id, "failed", error=f"file not found")
-                return 1
+            info(f"{task.name}: Running codex ({attempt})")
+            db.change_task(task, "running", attempt=attempt)
 
-            write_logs(task, output, attempt)
+            output = run_codex(task, prompt)
 
             result = inspect_output(session, task, output)
-            if result == 0:
-                return 0
+            if result != 1:
+                info(f"successfull flag found for {task.name}: {flag}")
+                db.change_task(task, "done", flag=flag)
+                break
 
             prompt = (
                 prompt
                 + "\n\nThis is incorrect flag."
                 " Keep working and print ONLY the correct final flag."
             )
-
-        warning(f"max attempts reached for {task.name}")
-        db.insert_entry(task.id, "failed", error="max attempts reached")
-        return 0
+        else:
+            warning(f"max attempts reached for {task.name}")
+            db.change_task(task, "failed", "max attempts reached")
+    except Exception as e:
+        exception(e)
     finally:
-        if is_docker_task and instance_url and session:
-            info(f"Deleting instance for {task.name}")
-            ctfd.delete_instance(session, task.id)
+        if instance:
+            ctfd.stop_instance(session)
 
 
 def inspect_output(session, task, output) -> int:
+    """search for things in codex logs"""
     clean = strip_ansi(output)
-
+    
+    seen_tokens = False
     tokens = 0
     flags = []
 
     for line in clean.splitlines():
-        if tokens == 0:
-            m = re.search(r"tokens used\s*([\d,]+)", line, flags=re.IGNORECASE)
+        if not seen_tokens:
+            m = re.search(r"tokens used", line, flags=re.IGNORECASE)
             if m:
-                try:
-                    tokens = int(m.group(1).replace(",", ""))
-                    info(f"{task.name}: tokens used: {tokens}")
-                    db.insert_entry(task.id, tokens=tokens)
-
-                except (ValueError, IndexError):
-                    error("Failed to extract tokens")
-                    tokens_used = 0
+                seen_tokens = True
+        else:
+            try:
+                tokens = int(line.replace(",", ""))
+                info(f"{task.name}: tokens used: {tokens}")
+                db.change_task(task, tokens=tokens)
+            except:
+                seen_tokens = False
 
         if "Access blocked" in line:
             error(f"{task.name}: Cannot connect to Codex servers (check your VPN)")
@@ -246,12 +227,6 @@ def inspect_output(session, task, output) -> int:
 
     for flag in reversed(flags):
         if ctfd.submit_flag(session, task.id, flag):
-            info(f"successfull flag found for {task.name}: {flag}")
-            db.insert_entry(
-                task.id,
-                "done",
-                flag=flag,
-            )
             return 1
         else:
             info(f"{task.name}: incorrect flag found: {flag}")
@@ -260,6 +235,7 @@ def inspect_output(session, task, output) -> int:
 
 
 def run_tasks():
+    """Orchestrator of parralel processes"""
     if not TASKS_DIR.exists():
         error(f"task directory does not exist: {TASKS_DIR}")
         return 1
@@ -295,7 +271,7 @@ def run_tasks():
         for fut, task in future_to_task.items():
             fut.cancel()
             if fut in active:
-                db.insert_entry(task.id, "failed", error="interrupted")
+                db.change_task(task, "failed", "interrupted")
         db.move_status(DB_PATH, "running", "failed")
         global STOP_EVENT
         STOP_EVENT = True

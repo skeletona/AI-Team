@@ -1,14 +1,10 @@
-from pathlib import Path
-from time import time
 import re
-import threading
-from typing import Any, Mapping, Optional
 from urllib.parse import unquote, urljoin
 
 import requests
 
-from src.db import insert_entry, read_entries
-from src.models import *
+from src import db
+from src import *
 
 
 def login(session: requests.Session) -> bool:
@@ -63,12 +59,11 @@ def create_session() -> requests.Session | None:
 
 
 def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool:
-    endpoint = urljoin(CTFD_URL + CTFD_SUBMIT_API + challenge_id, CTFD_SUBMIT_PATH)
+    endpoint = urljoin(CTFD_URL + CTFD_SUBMIT_API, CTFD_SUBMIT_PATH)
     payload = {"submission": flag, "challenge_id": challenge_id}
     csrf_token = session.cookies.get("csrf_token")
     if not csrf_token:
         try:
-            info("re-fetching csrf token")
             csrf_token = fetch_csrf_token(session, "/challenges")
         except Exception as exc:
             warning("could not obtain CSRF token for submission: %s", exc)
@@ -134,8 +129,10 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
             Task(
                 id=task[CTFD_JSON_FORMAT["id"]],
                 name=task[CTFD_JSON_FORMAT["name"]],
+                timestamp=now(),
                 status="queued",
                 points=task[CTFD_JSON_FORMAT["points"]],
+                tokens=0,
                 solves=task[CTFD_JSON_FORMAT["solves"]] if CTFD_JSON_FORMAT["solves"] else 0,
                 category=task[CTFD_JSON_FORMAT["category"]] if CTFD_JSON_FORMAT["category"] else "",
             )
@@ -149,7 +146,7 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
         return []
 
 
-def fetch_task_details(session: requests.Session, task_id: Any) -> str | None:
+def fetch_task_details(session: requests.Session, task_id: str) -> str | None:
     resp = session.get(
         urljoin(CTFD_URL, CTFD_TASK_API + str(task_id)),
         headers={"Accept": "application/json", **CTFD_HEADERS},
@@ -160,16 +157,6 @@ def fetch_task_details(session: requests.Session, task_id: Any) -> str | None:
         return payload.get(CTFD_TASK_DETAIL_LIST) if isinstance(payload, dict) else {}
     else:
         return payload
-
-
-#def get_download_uuid(session: requests.Session, challenge_id: str, file_id: int) -> str:
-#    url = (
-#        f"{CTFD_URL}{CTFD_TASK_API}{challenge_id}/download/{file_id}"
-#    )
-#    r = session.get(url)
-#    r.raise_for_status()
-#    data = r.json()
-#    return data["data"]["uuid"]
 
 
 def download_task_files(task: Task, session: requests.Session) -> int:
@@ -231,7 +218,7 @@ def download_new_tasks():
 
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
-    existing_tasks = read_entries(DB_PATH)
+    existing_tasks = db.read_entries(DB_PATH)
     existing_ids = {task.id for task in existing_tasks}
     info(f"Already downloaded tasks: {len(existing_tasks)}")
     info("Downloading tasks")
@@ -252,7 +239,7 @@ def download_new_tasks():
             continue
 
         info(f"\tAdding {task.name}")
-        insert_entry(**asdict(task))
+        db.insert_entry(**asdict(task))
         
         if task.status == "solved":
             info(f"Already solved, skipping: {task.name}")
@@ -269,61 +256,41 @@ def download_new_tasks():
     else:
         info("No new tasks to add")
 
-def launch_instance(session: requests.Session, task_id: str) -> str | None:
-    """Launch an instance for a given task and return the connection URL."""
+
+def start_instance(session: requests.Session, task_id: str) -> bool:
+    session.headers.update({"Content-Type": "application/json",
+                            "CSRF-Token": fetch_csrf_token(session, "/challenges")
+                            })
+
+    stop_instance(session)
+
     endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
+
     resp = session.post(endpoint)
-    if resp.status_code != 200:
-        warning(f"Failed to launch instance for task {task_id}, status code: {resp.status_code}")
-        return None
-    try:
-        data = resp.json()
-        if data.get("success"):
-            container_data = data.get("containers_data", [])
-            if container_data:
-                container = container_data[0]
-                ip = data.get("ip")
-                port = container.get("port")
-                conntype = container.get("conntype", "http")
-                if ip and port:
-                    return f"{conntype}:{ip}:{port}"
-        warning(f"Could not extract connection info from launch response for task {task_id}: {data}")
-        return None
-    except ValueError:
-        warning(f"Failed to parse JSON response when launching instance for task {task_id}")
-        return None
-
-def get_instance_url(session: requests.Session, task_id: str) -> str | None:
-    """Get the instance URL for a given task."""
-    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
+    if not resp.json()["success"]:
+        debug(f"Failed to POST instance: HTTP {resp.status_code}: {resp.text}")
+        if "Frequency limit" in resp.json()["msg"]:
+            raise f"ctfd_owl frequency limit: {resp.json()}"
+        return False
+    
     resp = session.get(endpoint)
-    if resp.status_code != 200:
-        warning(f"Failed to get instance url for task {task_id}, status code: {resp.status_code}")
-        return None
-    try:
-        data = resp.json()
-        if data.get("success"):
-            container_data = data.get("containers_data", [])
-            if container_data:
-                container = container_data[0]
-                ip = data.get("ip")
-                port = container.get("port")
-                conntype = container.get("conntype", "http")
-                if ip and port:
-                    return f"{conntype}:{ip}:{port}"
-        return None # It's normal for there to be no instance if it hasn't been launched
-    except ValueError:
-        warning(f"Failed to parse JSON response when getting instance url for task {task_id}")
-        return None
+    if not resp.json()["success"]:
+        debug(f"Failed to GET instance: HTTP {resp.status_code}: {resp.text}")
+        return False
 
-def delete_instance(session: requests.Session, task_id: str) -> bool:
-    """Delete an instance for a given task."""
-    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
-    resp = session.delete(endpoint)
-    if resp.status_code != 200:
-        warning(f"Failed to delete instance for task {task_id}, status code: {resp.status_code}")
+    if resp.json() == {"success": True} or not resp.json()["success"]:
         return False
     return True
+
+
+def stop_instance(session: requests.Session) -> bool:
+    endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container")
+    resp = session.delete(endpoint)
+    if resp.status_code != 200:
+        warning(f"Failed to DELETE instance, status code: {resp.status_code}")
+        return False
+    return True
+
 
 def main():
     download_new_tasks()

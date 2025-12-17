@@ -12,29 +12,15 @@ from src.models import *
 from . import db
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+PERCENT_5H = 0
+PERCENT_WEEK = 0
 
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 sock = Sock(app)
 
+
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text or "")
-
-
-def _format_tokens(value: int) -> str:
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.1f}M"
-    if value >= 10_000:
-        return f"{value / 1_000:.1f}K"
-    if value >= 1_000:
-        return f"{value / 1_000:.0f}K"
-    return str(value)
-
-
-def _percent_left(used: int, limit: int) -> int:
-    if limit <= 0:
-        return 100
-    ratio = min(max(used / limit, 0.0), 1.0)
-    return int(round((1.0 - ratio) * 100))
 
 
 def load_log(task: Task) -> str | None:
@@ -42,9 +28,7 @@ def load_log(task: Task) -> str | None:
         content = task.log.read_text(encoding="utf-8", errors="replace")
     else:
         warning(f"{task.name}: no log file: {task.log}")
-        return
-    if len(content) > 200_000:
-        return "\n\n[truncated]" + content[-200_000:]
+        return 
     return content
 
 
@@ -62,19 +46,27 @@ def task_view_model(task: Task) -> dict:
         "runs": 0,
         "tokens": task.tokens,
         "text": text,
+        "latest_status": task.status,
     }
 
 
 def stats_view_model() -> Mapping[str, object]:
     entries = db.read_entries(DB_PATH)
-    tokens = sum(task.tokens for task in entries)
+    time_now = now()
+    tokens = sum(task.tokens for task in entries if time_now - task.timestamp < 5 * 360)
 
     # --- Budgets ---
-    budgets = {  # TODO
-        "tokens_5h": 0,
-        "limit_5h": 250000,
-        "tokens_week": 0,
-        "limit_week": 1000000,
+    limit_5h    = 25000000
+    limit_week  = 100000000
+
+    tokens_5h   = int(PERCENT_5H * limit_5h / 100 + tokens)
+    tokens_week = int(PERCENT_WEEK * limit_week / 100 + tokens)
+
+    budgets = {
+        "tokens_5h": tokens_5h,
+        "limit_5h": limit_5h,
+        "tokens_week": tokens_week,
+        "limit_week": limit_week,
     }
 
     # --- Cards (task detail page only) ---
@@ -118,7 +110,6 @@ def task_detail(task_id: str) -> Response:
 
 @sock.route("/task/<string:task_id>/update")
 def load_codex_ws(ws, task_id: str):
-    # Wait for the client to send a message to start the log stream
     message = ws.receive()
     if not message or not message.startswith("start_log_stream:"):
         print(f"WS received unexpected message or no message: {message}", flush=True)
@@ -126,14 +117,11 @@ def load_codex_ws(ws, task_id: str):
         return
 
     task = db.get_entry(DB_PATH, task_id)
-    path = CODEX_DIR / task.name / "thinking.log"
-    
-    if not path.exists() or task is None or task.status != "running":
+    if not task.log.exists() or task is None or task.status != "running":
         ws.close()
         return
-    print("WS start", flush=True)
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(task.log, "r", encoding="utf-8") as f:
         f.seek(0, 2)
         while True:
             task = db.get_entry(DB_PATH, task_id)
@@ -144,8 +132,6 @@ def load_codex_ws(ws, task_id: str):
                 sleep(1)
             else:
                 ws.send(line)
-
-    print("WS end", flush=True)
 
 
 @app.route("/api/task/<int:task_id>/message", methods=["POST"])
@@ -179,14 +165,29 @@ def task_message(task_id: str) -> Response:
     return jsonify({"status": "ok"})
 
 
-def handle_sigterm(signum, frame):
-    info("recieved SIGTERM")
-    exit(0)
+def get_percent() -> tuple[float]:
+    proc = subprocess.Popen(
+        ["codex", "exec", "--skip-git-repo-check", "say hi"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={"RUST_LOG": "debug"},
+        text=True,
+        bufsize=1,
+    )
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if "RateLimitWindow" in line:
+            primary = float(line.split('used_percent:')[1].split(',')[0].strip())
+            secondary = float(line.split('used_percent:')[2].split(',')[0].strip())
+            info(f"Tokens used in 5h:{100 - primary}%, week: {100 - secondary}%")
+            return (100 - primary, 100 - secondary)
 
 
 def main():
-    signal(SIGTERM, handle_sigterm)
+    global PERCENT_5H, PERCENT_WEEK
     info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
+    PERCENT_5H, PERCENT_WEEK = get_percent()
     app.run(host=HOST, port=PORT, debug=DEBUG_FLASK)
     info("ended")
 
