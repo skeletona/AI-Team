@@ -20,12 +20,12 @@ sock = Sock(app)
 
 
 def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text or "")
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 
 
 def load_log(task: Task) -> str | None:
     if task.log.exists():
-        content = task.log.read_text(encoding="utf-8", errors="replace")
+        content = strip_ansi(task.log.read_text(encoding="utf-8", errors="replace"))
     else:
         warning(f"{task.name}: no log file: {task.log}")
         return 
@@ -131,7 +131,7 @@ def load_codex_ws(ws, task_id: str):
             if not line:
                 sleep(1)
             else:
-                ws.send(line)
+                ws.send(strip_ansi(line))
 
 
 @app.route("/api/task/<int:task_id>/message", methods=["POST"])

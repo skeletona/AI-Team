@@ -69,7 +69,7 @@ def run_codex(task: Task, prompt: str) -> str:
     output = ""
 
     task.log.parent.mkdir(parents=True, exist_ok=True)
-
+    info(f"task.log: {task.log}")
     with task.log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
@@ -77,6 +77,7 @@ def run_codex(task: Task, prompt: str) -> str:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         RUNNING_CODEX[task.id] = proc
 
@@ -87,16 +88,17 @@ def run_codex(task: Task, prompt: str) -> str:
                 if len(line) > 1000:
                     line = line[:1000] + "[truncated]"
                 fh.write(line)
-                print(line.replace("\r", "\n"), flush=True)
+                print(line.rstrip("\r\n"), flush=True)
                 fh.flush()
                 lines.append(line)
             proc.wait(timeout=CODEX_TIMEOUT)
             if proc.returncode:
                 error(f"Codex returned an error code: {proc.returncode}")
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGTERM)
+            return -1
         except Exception as e:
-            output = "".join(lines)
-            info(output)
-            exception(e)
+            exception(f"Some error running codex: {e}")
             proc.kill()
             proc.wait(timeout=5)
         finally:
@@ -140,7 +142,7 @@ def mark_all_running_failed(reason: str = "marked as failed") -> None:
     entries = db.read_entries(DB_PATH)
     for task in entries:
         if entry.status == "running":
-            db.change_task(task, "failed", reason)
+            task = db.change_task(task, "failed", reason)
 
 
 def process_task(task: Task) -> int:
@@ -161,10 +163,10 @@ def process_task(task: Task) -> int:
         warning("could not login to CTFd; running without submissions", CTFD_URL)
         if is_docker_task:
             error("Cannot process docker task without a session.")
-            db.change_task(task, "failed", "login failed")
+            task = db.change_task(task, "failed", "login failed")
             return 1
     elif task.id in [t.id for t in ctfd.fetch_tasks(session) if t.status == "solved"]:
-        db.change_task(task, "solved", "solved by a human")
+        task = db.change_task(task, "solved", "solved by a human")
         info("skipping %s (%s): solved while queued", task.name, task.id)
         return 0
 
@@ -183,12 +185,12 @@ def process_task(task: Task) -> int:
                 return
 
             info(f"{task.name}: Running codex ({attempt})")
-            db.change_task(task, "running", attempt=attempt)
+            task = db.change_task(task, "running", attempt=attempt)
 
             output = run_codex(task, prompt)
 
             result = inspect_output(session, task, output)
-            if result != 0:
+            if result != 0 or output == -1:
                 break
 
             prompt = prompt + "\n".join([
@@ -197,7 +199,7 @@ def process_task(task: Task) -> int:
             ])
         else:
             warning(f"max attempts reached for {task.name}")
-            db.change_task(task, "failed", "max attempts reached")
+            task = db.change_task(task, "failed", "max attempts reached")
     except Exception as e:
         error(f"Some error: {e}")
         exception(e)
@@ -225,7 +227,7 @@ def inspect_output(session, task, output) -> int:
             try:
                 tokens = int(line.replace(",", ""))
                 info(f"{task.name}: tokens used: {tokens}")
-                db.change_task(task, tokens=tokens)
+                task = db.change_task(task, tokens=tokens)
             except:
                 seen_tokens = False
 
@@ -241,10 +243,13 @@ def inspect_output(session, task, output) -> int:
         flag = FLAG_RE.search(line)
         if flag:
             flags.append(flag.group(0))
+    
 
+    if not flags:
+        info(f"{task.name}: No flags found")
     for flag in reversed(flags):
         if ctfd.submit_flag(session, task.id, flag):
-            db.change_task(task, "done", flag=flag)
+            task = db.change_task(task, "solved", flag=flag)
             info(f"successfull flag found for {task.name}: {flag}")
             return 1
         else:
@@ -259,7 +264,7 @@ def run_tasks():
         error(f"task directory does not exist: {TASKS_DIR}")
         return 1
 
-    pending: list[Task] = db.read_entries(DB_PATH)
+    pending: list[Task] = [task for task in db.read_entries(DB_PATH) if task.status != "solved"]
     if not pending:
         error("no tasks in the database")
         return 1
@@ -292,7 +297,7 @@ def run_tasks():
         for fut, task in future_to_task.items():
             fut.cancel()
             if fut in active:
-                db.change_task(task, "failed", "interrupted")
+                task = db.change_task(task, "failed", "interrupted")
         db.move_status(DB_PATH, "running", "failed")
         global STOP_EVENT
         STOP_EVENT = True

@@ -102,9 +102,9 @@ def ensure_tasks_db(path: Path) -> None:
 
 def insert_entry(
     id: str,
-    tokens:     int        = 0,
-    points:     int        = 0,
-    solves:     int        = 0,
+    tokens:     int | None = None,
+    points:     int | None = None,
+    solves:     int | None = None,
     attempt:    int | None = None,
     timestamp:  int | None = None,
     status:     str | None = None,
@@ -172,7 +172,7 @@ def read_entries(path: Path) -> list[Task]:
             flag=row["flag"],
             tokens=row["tokens"],
             error=row["error"],
-            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"]}")
+            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"] or 0}")
         ) for row in rows]
 
 

@@ -78,6 +78,7 @@ def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool
         json=payload,       # files=payload
         headers=headers,
     )
+
     if resp.status_code not in (200, 201):
         warning("flag submission returned HTTP %s", resp.status_code)
         error(f"submission failed: HTTP {resp.status_code}")
@@ -92,12 +93,18 @@ def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool
         if data.get("status") == "correct":
             info("server accepted flag for challenge %s", challenge_id)
             return True
+        elif "already solved" in data.get('message'):
+            info("already solved")
+            return True
         else:
             error(f"submission failed: {data.get('message')}")
             return False
-    else:
-        error(f"submission failed: {payload}")
-        return False
+    if "already solved" in data.get('message'):
+            info("already solved")
+            return True
+
+    error(f"submission failed: {payload}")
+    return False
 
 
 def fetch_csrf_token(session: requests.Session, path: str) -> str:

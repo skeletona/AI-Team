@@ -47,12 +47,12 @@
     </main>
 
     <script>
-      const thinkingContainer = document.querySelector('[data-thinking-scroll]');
       const thinkingTarget = document.querySelector('[data-thinking-target]');
       const taskId = {{ task_id }};
 
       function scrollToBottom() {
-        thinkingContainer.scrollTop = thinkingContainer.scrollHeight;
+        scrollHeight = document.body.scrollHeight;
+        window.scrollTo(0, scrollHeight);
       }
       window.addEventListener('load', scrollToBottom);
 

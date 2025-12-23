@@ -5,11 +5,7 @@ try:
     from shutil import rmtree
     import typer
 
-    from src import (
-        JSON_FILE, DB_PATH, LOGS_DIR, TASKS_DIR, CODEX_DIR,
-        info, error, warning, asdict, json, subprocess,
-        Path, os, Process, basicConfig, INFO, SIGTERM, SIGKILL
-    )
+    from src import *
     from src import codex, website, ctfd
 
 except ModuleNotFoundError as e:
@@ -326,7 +322,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                     for line in p.stdout:
                         f.write(line)
                         f.flush()
-                        typer.echo(line, nl=False)
+                        print(line, end="\r")
                 p.wait()
             except KeyboardInterrupt:
                 typer.echo()
