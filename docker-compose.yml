@@ -1,0 +1,11 @@
+services:
+  ai-team:
+    build:
+      context: .
+    container_name: AI-Team
+    volumes:
+      - ./tasks:/tasks
+      - ./codex:/codex
+      - ./logs/codex:/home/ubuntu/.codex
+      - ./.env:/usr/local/sbin/.env:ro
+    command: tail -f /dev/null

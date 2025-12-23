@@ -8,7 +8,7 @@ try:
     from src import (
         JSON_FILE, DB_PATH, LOGS_DIR, TASKS_DIR, CODEX_DIR,
         info, error, warning, asdict, json, subprocess,
-        Path, os, Process, basicConfig, INFO,
+        Path, os, Process, basicConfig, INFO, SIGTERM, SIGKILL
     )
     from src import codex, website, ctfd
 
@@ -62,11 +62,11 @@ def run(
     if not services:
         services = ["download", "website", "codex"]
     if "download" in services:
-        ctfd.main()
+        start_background("ctfd", attach=1)
     if "website" in services:
-        start_background(name="website", log="flask.log", attach="website" in attach_lst)
+        start_background("website", log="flask.log", attach="website" in attach_lst)
     if "codex" in services:
-        start_background(name="codex", attach="codex" in attach_lst)
+        start_background("codex", attach="codex" in attach_lst)
 
 
 @app.command("status")
@@ -155,12 +155,12 @@ def restart(
         stop_background("website")
         if "website" in PROCS:
             del PROCS["website"]
-        start_background(name="website", log="flask.log", attach="website" in attach_lst)
+        start_background("website", log="flask.log", attach="website" in attach_lst)
     if "codex" in services:
         stop_background("codex")
         if "codex" in PROCS:
             del PROCS["codex"]
-        start_background(name="codex", attach="codex" in attach_lst)
+        start_background("codex", attach="codex" in attach_lst)
 
 
 

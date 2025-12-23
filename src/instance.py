@@ -1,16 +1,18 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import re
 import threading
 from urllib.parse import urljoin
 import requests
 from sys import argv, exit
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
-CTFD_URL = "https://ctfd.infosec.moscow"
-TEAM_NAME = "AI"
-TEAM_EMAIL = "skeletohan@yandex.ru"
-TEAM_PASSWORD = "hUF3Qq#hwgF?Fn7"
+CTFD_URL        = os.environ["CTFD_URL"].rstrip("/")
+TEAM_EMAIL      = os.environ.get("AI_TEAM_EMAIL")
+TEAM_PASSWORD   = os.environ.get("AI_TEAM_PASSWORD")
 CTFD_HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -119,20 +121,17 @@ def request_instance(session: requests.Session, task_id: str, command: str) -> d
         if resp.status_code != 200:
             print(f"Failed to renew instance, status code: {resp.status_code}\n{resp.text}")
             return False
-    
-    if resp.json() == {'success': True}:
-        return "instance is not running"
+
     return resp.json()
 
 
 def main():
-    argv[2] = argv[2].lower()
-    if not argv[1] or not argv[2] or argv[2] not in ("start", "info", "stop", "renew"):
+    if len(argv) < 3 or argv[2].lower() not in ("start", "info", "stop", "renew"):
         print("Usage: instance {num} [start / info / stop / renew]")
         return
 
     session = create_session()
-    print(request_instance(session, argv[1], argv[2]))
+    print(request_instance(session, argv[1], argv[2].lower()))
 
 
 if __name__ == "__main__":

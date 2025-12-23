@@ -6,6 +6,7 @@ from src import db, ctfd
 from random import shuffle
 import re
 import concurrent.futures
+from shutil import copy
 
 
 STOP_EVENT = False
@@ -26,7 +27,7 @@ def build_flag_regex(flag_regex: str | None, flag_format: str | None) -> re.Patt
             flag_regex = re.compile(flag_regex)
         except re.error as exc:
             raise ValueError(f"FLAG_FORMAT {spec!r} is not a valid format. Example: testCTF{{}}") from exc
-    
+
     return flag_regex
 
 
@@ -37,28 +38,41 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 
 
-def extract_thinking(output: str) -> str:
-    clean = strip_ansi(output)
-    lower = clean.lower()
-    idx = lower.find("thinking")
-    if idx == -1:
-        return clean
-    snippet = clean[idx:].splitlines()
-    if snippet:
-        snippet = snippet[1:]  # drop the 'thinking' label line
-    return "\n".join(snippet).rstrip()
+
+def is_container_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "AI-Team"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip() != "true":
+            subprocess.run(["docker", "compose", "up", "--build", "-d"])
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", "AI-Team"],
+                capture_output=True,
+                text=True
+            )
+            if result.stdout.strip() != "true":
+                error("could not run docker container")
+                exit(1)
+    except Exception as e:
+        error(f"Could not run docker container: {e}")
+        exit(1)
 
 
 def run_codex(task: Task, prompt: str) -> str:
-    command = CODEX_COMMAND + [prompt]
+    is_container_running()
+
+    command = CODEX_COMMAND + ["-C", f"/tasks/{task.name}"] + [prompt]
     completed_normally = False
+    output = ""
 
     task.log.parent.mkdir(parents=True, exist_ok=True)
-    
+
     with task.log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
-            cwd=TASKS_DIR / task.name,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -73,17 +87,23 @@ def run_codex(task: Task, prompt: str) -> str:
                 if len(line) > 1000:
                     line = line[:1000] + "[truncated]"
                 fh.write(line)
+                print(line.replace("\r", "\n"), flush=True)
                 fh.flush()
                 lines.append(line)
             proc.wait(timeout=CODEX_TIMEOUT)
-        except Exception:
+            if proc.returncode:
+                error(f"Codex returned an error code: {proc.returncode}")
+        except Exception as e:
+            output = "".join(lines)
+            info(output)
             exception(e)
             proc.kill()
             proc.wait(timeout=5)
         finally:
             RUNNING_CODEX.pop(task.id, None)
 
-    output = "".join(lines)
+    if not output:
+        output = "".join(lines)
     return output
 
 
@@ -106,13 +126,9 @@ def build_codex_prompt(task: Task, instance: bool) -> str:
 
     parts = CODEX_PROMPT
     if instance:
-        parts += [f"Instance is available. Run instance {task.id} [command]",
-                   "Possible commands: start, stop, info, renew",
-                   "Do not stop instance before exiting."
-        ]
+        parts += CODEX_OWL_PROMPT
     if context:
-        parts.extend(
-            [
+        parts.extend([
                 "Previous attempts summary (continue from here, do not repeat work):",
                 context,
             ]
@@ -128,6 +144,7 @@ def mark_all_running_failed(reason: str = "marked as failed") -> None:
 
 
 def process_task(task: Task) -> int:
+    info(f"{task.name}: starting")
     """Give MAX_CODEX_ATTEMPTS attempts for one task"""
     session = ctfd.create_session()
 
@@ -171,20 +188,18 @@ def process_task(task: Task) -> int:
             output = run_codex(task, prompt)
 
             result = inspect_output(session, task, output)
-            if result != 1:
-                info(f"successfull flag found for {task.name}: {flag}")
-                db.change_task(task, "done", flag=flag)
+            if result != 0:
                 break
 
-            prompt = (
-                prompt
-                + "\n\nThis is incorrect flag."
+            prompt = prompt + "\n".join([
+                "\n\nThis is incorrect flag."
                 " Keep working and print ONLY the correct final flag."
-            )
+            ])
         else:
             warning(f"max attempts reached for {task.name}")
             db.change_task(task, "failed", "max attempts reached")
     except Exception as e:
+        error(f"Some error: {e}")
         exception(e)
     finally:
         if instance:
@@ -192,7 +207,9 @@ def process_task(task: Task) -> int:
 
 
 def inspect_output(session, task, output) -> int:
-    """search for things in codex logs"""
+    """ search for things in codex logs
+        -1 -> error, 0 -> no valid flags, 1 -> valid flag    
+    """
     clean = strip_ansi(output)
     
     seen_tokens = False
@@ -227,6 +244,8 @@ def inspect_output(session, task, output) -> int:
 
     for flag in reversed(flags):
         if ctfd.submit_flag(session, task.id, flag):
+            db.change_task(task, "done", flag=flag)
+            info(f"successfull flag found for {task.name}: {flag}")
             return 1
         else:
             info(f"{task.name}: incorrect flag found: {flag}")
@@ -267,6 +286,8 @@ def run_tasks():
 
     except KeyboardInterrupt:
         info("Stopping signal recieved")
+    except Exception as e:
+        error(f"Error running tasks: {e}")
     finally:
         for fut, task in future_to_task.items():
             fut.cancel()
@@ -287,6 +308,29 @@ def handle_sigterm(signum, frame):
 
 
 def main():
+    if not LOGS_DIR.exists():
+        debug(f"creating {LOGS_DIR}")
+        LOGS_DIR.mkdir()
+    if not CODEX_DIR.exists():
+        debug(f"creating {CODEX_DIR}")
+        CODEX_DIR.mkdir()
+
+
+    codex_auth = LOGS_DIR / "codex" / "auth.json"
+    if not codex_auth.exists():
+        debug("copying codex auth.json")
+        try:
+            codex_auth.parent.mkdir(exist_ok=True)
+            copy(Path("~/.codex/auth.json").expanduser(), codex_auth)
+        except Exception as e:
+            error(f"Could not get ~/.codex/auth.json: {e}")
+            exit(1)
+    
+
+    if CTFD_OWL and MAX_CODEX_WORKERS > 1:
+        error("CTFD OWL allows only 1 worker at a time. Disable CTFD OWL or set MAX_CODEX_WORKERS=1")
+        exit(1)
+
     info(f"FLAG_REGEX: {FLAG_RE.pattern}")
     signal(SIGTERM, handle_sigterm)
     info("Starting Codex worker …")

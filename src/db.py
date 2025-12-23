@@ -105,7 +105,7 @@ def insert_entry(
     tokens:     int        = 0,
     points:     int        = 0,
     solves:     int        = 0,
-    attempt:    bool       = False,
+    attempt:    int | None = None,
     timestamp:  int | None = None,
     status:     str | None = None,
     name:       str | None = None,
@@ -129,13 +129,14 @@ def insert_entry(
             timestamp = EXCLUDED.timestamp,
             name      = COALESCE(EXCLUDED.name, name),
             status    = COALESCE(EXCLUDED.status, status),
-            points    = EXCLUDED.points,
-            solves    = EXCLUDED.solves,
-            category  = EXCLUDED.category,
-            flag      = EXCLUDED.flag,
-            attempt   = EXCLUDED.attempt,
-            tokens    = EXCLUDED.tokens,
-            error     = EXCLUDED.error;
+            points    = COALESCE(EXCLUDED.points, points),
+            solves    = COALESCE(EXCLUDED.solves, solves),
+            category  = COALESCE(EXCLUDED.category, category),
+            flag      = COALESCE(EXCLUDED.flag, flag),
+            attempt   = COALESCE(EXCLUDED.attempt, attempt),
+            tokens    = tokens + COALESCE(EXCLUDED.tokens, 0),
+            error     = COALESCE(EXCLUDED.error, error)
+
     """
     params = (
         id,
@@ -146,7 +147,7 @@ def insert_entry(
         solves,
         category,
         flag,
-        int(attempt),
+        attempt,
         tokens,
         error,
     )
@@ -240,10 +241,11 @@ def change_task(
     if name       is not None: updates["name"]      = name
     if log        is not None: updates["log"]       = log
 
-    debug(f"{task.name}: Updating: {updates}")
     if tokens:
         updates["tokens"]  = task.tokens  + tokens
     updates["timestamp"] = now()
+
+    debug(f"{task.name}: Updating: {updates}")
     new_task = replace(task, **updates)
 
     if attempt:

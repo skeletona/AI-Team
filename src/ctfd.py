@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import re
 from urllib.parse import unquote, urljoin
 
@@ -130,7 +132,7 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
                 id=task[CTFD_JSON_FORMAT["id"]],
                 name=task[CTFD_JSON_FORMAT["name"]],
                 timestamp=now(),
-                status="queued",
+                status="solved" if task["solved_by_me"] else "queued",
                 points=task[CTFD_JSON_FORMAT["points"]],
                 tokens=0,
                 solves=task[CTFD_JSON_FORMAT["solves"]] if CTFD_JSON_FORMAT["solves"] else 0,
@@ -161,25 +163,25 @@ def fetch_task_details(session: requests.Session, task_id: str) -> str | None:
 
 def download_task_files(task: Task, session: requests.Session) -> int:
     task_dir = TASKS_DIR / task.name
-    task_dir.mkdir(exist_ok=True)
 
     try:
         task_details = fetch_task_details(session, task.id)
         files = list(task_details.get(CTFD_FILES_JSON))  # file["id"]
     except requests.exceptions.RequestException as e:
-        error(f"Failed to fetch challenge details: {task.name}: {e}")
-        return
+        error(f"{task.name}: Failed to fetch challenge details: {e}")
+        return -1
 
     task_info = asdict(task)
     task_info["description"] = task_details.get("description", "")
 
+    task_dir.mkdir(exist_ok=True)
     task_json_path = task_dir / "task.json"
     with open(task_json_path, "w") as f:
         json.dump(task_info, f, indent=4, sort_keys=True, ensure_ascii=False)
 
 
     if not files:
-        return
+        return 0
 
     for file in files:
         full_url = urljoin(CTFD_URL + CTFD_DOWNLOAD_API, file)  # uuid = get_download_uuid(session, task.id, file)
@@ -203,14 +205,14 @@ def download_task_files(task: Task, session: requests.Session) -> int:
                         continue
                     size += len(chunk)
                     if size > MAX_ATTACHMENT_SIZE * 1024 * 1024:
-                        error(f"{task.name}: Aborting download '{filename}': size > {MAX_ATTACHMENT_SIZE} MB")
-                        return 1
+                        error(f"\t{task.name}: Aborting download '{filename}': size > {MAX_ATTACHMENT_SIZE} MB")
+                        return -1
                     f.write(chunk)
 
 
         except requests.exceptions.RequestException as e:
-            error(f"Failed to download {full_url}: {e}")
-            return 1
+            error(f"\tFailed to download {full_url}: {e}")
+            return -1
     return 0
 
 
@@ -230,7 +232,7 @@ def download_new_tasks():
 
     tasks = fetch_tasks(session)
     if not tasks:
-        info("No tasks found on the platform.")
+        error("No tasks found on the platform.")
         return
 
     new_tasks_count = 0
@@ -238,17 +240,17 @@ def download_new_tasks():
         if task.id in existing_ids:
             continue
 
-        info(f"\tAdding {task.name}")
+        if download_task_files(task, session):
+            continue
+
         db.insert_entry(**asdict(task))
-        
+
         if task.status == "solved":
-            info(f"Already solved, skipping: {task.name}")
+            info(f"{task.name}: Already solved")
             continue
 
         new_tasks_count += 1
-
-        if download_task_files(task, session):
-            continue
+        info(f"\tAdded {task.name}")
 
 
     if new_tasks_count > 0:
@@ -262,22 +264,29 @@ def start_instance(session: requests.Session, task_id: str) -> bool:
                             "CSRF-Token": fetch_csrf_token(session, "/challenges")
                             })
 
-    stop_instance(session)
-
     endpoint = urljoin(CTFD_URL, f"/plugins/ctfd-owl/container?challenge_id={task_id}")
 
     resp = session.post(endpoint)
-    if not resp.json()["success"]:
+    answ = resp.json()
+    debug(f"OWL POST response: {answ}")
+
+    if not answ["success"]:
         debug(f"Failed to POST instance: HTTP {resp.status_code}: {resp.text}")
-        if "Frequency limit" in resp.json()["msg"]:
-            raise f"ctfd_owl frequency limit: {resp.json()}"
-        return False
-    
+        if "Frequency limit" in answ["msg"]:
+            raise f"ctfd_owl frequency limit: {answ}"
+            return False
+        if "You have boot" in answ["msg"]:
+            info(f"Stopping previously running OWL instance: {answ["msg"].split()[2:5]}")
+            stop_instance(session)
+            return start_instance(session, task_id)
+        elif not answ["success"]:
+            error(f"Some OWL error: {answ}")
+
     resp = session.get(endpoint)
+    debug(f"GET response: {resp.json()}")
     if not resp.json()["success"]:
         debug(f"Failed to GET instance: HTTP {resp.status_code}: {resp.text}")
         return False
-
     if resp.json() == {"success": True} or not resp.json()["success"]:
         return False
     return True
@@ -289,8 +298,14 @@ def stop_instance(session: requests.Session) -> bool:
     if resp.status_code != 200:
         warning(f"Failed to DELETE instance, status code: {resp.status_code}")
         return False
+    debug(f"DELETE response: {resp.json()}")
     return True
 
 
 def main():
     download_new_tasks()
+
+
+if __name__ == "__main__":
+    main()
+

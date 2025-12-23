@@ -51,7 +51,7 @@ CODEX_TIMEOUT       = int(os.environ.get("CODEX_TIMEOUT") or 60) * 60
 TARGET_POINTS       = int(os.environ.get("TARGET_POINTS") or 0)
 MAX_CODEX_TOKEN     = int(os.environ.get("MAX_CODEX_TOKENS") or 0)
 MODEL               = os.environ.get("MODEL")
-CODEX_COMMAND   = ["codex", "exec", "-s", "danger-full-access", "-m", MODEL, "--skip-git-repo-check"]
+CODEX_COMMAND = ["docker", "exec", "-it", "AI-Team", "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL, "-c", "model_reasoning_effort=low", "--skip-git-repo-check"]
 
 ROOT        = Path(__file__).resolve().parent.parent
 DB_PATH     = ROOT / os.environ.get("DB_PATH", "tasks.db")
@@ -73,7 +73,7 @@ basicConfig(level=DEBUG if ENABLE_DEBUG else INFO, format="%(levelname)s: %(mess
 # NON-CTFD #
 ############
 
-CTFD_OWL                = os.environ.get("CTFD_OWL", True)
+CTFD_OWL                = os.environ.get("CTFD_OWL", False)
 CTFD_TASK_API           = os.environ.get("CTFD_TASK_API", "/api/v1/challenges/")
 CTFD_TASKS_API          = os.environ.get("CTFD_TASKS_API", "/api/v1/challenges")
 CTFD_TASKS_JSON_LIST    = os.environ.get("CTFD_TASKS_PATH", "data")
@@ -90,9 +90,20 @@ if raw:
     CODEX_PROMPT = json.loads(raw)
 else:
     CODEX_PROMPT = [
-        "Solve this Jeopardy CTF challenge inside the current directory. Do not read anything above that directory.",
+        "Solve this Jeopardy CTF challenge inside the current directory.",
+        "You do not need to know what is in /tasks or /codex.",
         f"Flag format (regex): {FLAG_FORMAT}",
-        "Do not install new tools or use sudo.",
+        "You are in Docker container. You have sudo without password.",
+    ]
+
+raw = os.environ.get("CODEX_OWL_PROMPT")
+if raw:
+    CODEX_OWL_PROMPT = json.loads(raw)
+else:
+    CODEX_OWL_PROMPT = [
+        f"Instance is available. Run \"instance [id] [command]\" (instance is in your PATH)",
+        "Possible commands: start, stop, info, renew",
+        "Do not stop instance before exiting."
     ]
 
 raw = os.environ.get("CTFD_HEADERS")
