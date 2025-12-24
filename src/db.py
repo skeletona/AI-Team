@@ -115,7 +115,7 @@ def insert_entry(
     log:        Path| None = None,
 ) -> None:
     ensure_tasks_db(DB_PATH)
-    if status and status not in ("queued", "running", "solved", "failed"):
+    if status and status not in ("queued", "running", "solved", "failed", "block"):
         error("Invalid task status insertion: %s", status)
         return
 
@@ -253,3 +253,16 @@ def change_task(
     insert_entry(task.id, **updates)
     return new_task
 
+
+def update_task_status(path: Path, id: str, status: str, error: str | None = None) -> None:
+    ensure_tasks_db(path)
+    if status not in ("queued", "running", "solved", "failed", "block"):
+        error_log = f"Invalid task status update: {status}"
+        error(error_log)
+        return
+    with _connect(path) as conn:
+        conn.execute(
+            "UPDATE tasks SET status = ?, error = COALESCE(?, error) WHERE id = ?",
+            (status, error, id),
+        )
+        conn.commit()

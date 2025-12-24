@@ -32,6 +32,7 @@ def build_flag_regex(flag_regex: str | None, flag_format: str | None) -> re.Patt
 
 
 FLAG_RE = build_flag_regex(FLAG_REGEX, FLAG_FORMAT)
+CODEX_TASK_FILTER = os.environ.get("CODEX_TASK")
 
 
 def strip_ansi(text: str) -> str:
@@ -74,6 +75,7 @@ def run_codex(task: Task, prompt: str) -> str:
     command = CODEX_COMMAND + ["-C", f"/tasks/{task.name}"] + [prompt]
     completed_normally = False
     output = ""
+    stop_flag = CODEX_DIR / task.name / "stop.flag"
 
     task.log.parent.mkdir(parents=True, exist_ok=True)
     with task.log.open("w", encoding="utf-8") as fh:
@@ -91,6 +93,11 @@ def run_codex(task: Task, prompt: str) -> str:
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
+                if stop_flag.exists():
+                    info(f"{task.name}: stop flag detected, terminating")
+                    proc.send_signal(signal.SIGTERM)
+                    proc.wait(timeout=5)
+                    break
                 if len(line) > 1000:
                     line = line[:1000] + "    [truncated]"
                 fh.write(line)
@@ -147,6 +154,7 @@ def process_task(task: Task) -> int:
     """Give MAX_CODEX_ATTEMPTS attempts for one task"""
     info(f"{task.name}: starting")
     session = ctfd.create_session()
+    stop_flag = CODEX_DIR / task.name / "stop.flag"
 
     task_dir = TASKS_DIR / task.name
     task_json_path = task_dir / "task.json"
@@ -180,6 +188,9 @@ def process_task(task: Task) -> int:
 
         for attempt in range(start_attempt + 1, start_attempt + MAX_CODEX_ATTEMPTS + 1):
             if STOP_EVENT:
+                return
+            if stop_flag.exists():
+                info(f"{task.name}: stop flag detected, exiting")
                 return
 
             info(f"{task.name}: Running codex ({attempt})")
@@ -263,30 +274,62 @@ def run_tasks():
         error(f"task directory does not exist: {TASKS_DIR}")
         return 1
 
-    pending: list[Task] = [task for task in db.read_entries(DB_PATH) if task.status != "solved"]
-    if not pending:
-        error("no tasks in the database")
-        return 1
-
-    shuffle(pending)
-    pending: list[Task] = list(pending)
+    graceful_exit = False
     active: set[concurrent.futures.Future] = set()
     future_to_task: dict[concurrent.futures.Future, Task] = {}
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CODEX_WORKERS)
     try:
-        while pending:
+        while True:
+            entries = db.read_entries(DB_PATH)
+            if CODEX_TASK_FILTER:
+                matching = [task for task in entries if task.name == CODEX_TASK_FILTER]
+                if not matching:
+                    error(f"No task found with name: {CODEX_TASK_FILTER}")
+                    return 1
+                if any(task.status == "block" for task in matching):
+                    info(f"{CODEX_TASK_FILTER}: blocked, exiting")
+                    return 0
+                if any(task.status == "solved" for task in matching):
+                    info(f"{CODEX_TASK_FILTER}: already solved, exiting")
+                    graceful_exit = True
+                    return 0
+                if all(task.status not in ("queued", "running") for task in matching):
+                    for task in matching:
+                        db.update_task_status(DB_PATH, task.id, "queued", error="")
+                    info(f"{CODEX_TASK_FILTER}: forced to queued, continuing")
+                entries = matching
+
+            pending = [
+                task for task in entries
+                if task.status in ("queued", "running")
+                and task.id not in [t.id for t in future_to_task.values()]
+            ]
+            if pending:
+                shuffle(pending)
             while pending and len(active) < MAX_CODEX_WORKERS:
                 task = pending.pop(0)
                 fut = executor.submit(process_task, task)
                 active.add(fut)
                 future_to_task[fut] = task
 
-            done, active = concurrent.futures.wait(active, return_when=concurrent.futures.FIRST_COMPLETED)
+            if not active:
+                sleep(1)
+                continue
+
+            done, active = concurrent.futures.wait(
+                active,
+                timeout=1,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
 
             for f in done:
                 task = future_to_task.pop(f)
                 f.result()
+                if CODEX_TASK_FILTER and task.name == CODEX_TASK_FILTER:
+                    info(f"{CODEX_TASK_FILTER}: finished, exiting")
+                    graceful_exit = True
+                    return 0
 
     except KeyboardInterrupt:
         info("Stopping signal recieved")
@@ -295,7 +338,7 @@ def run_tasks():
     finally:
         for fut, task in future_to_task.items():
             fut.cancel()
-            if fut in active:
+            if fut in active and not graceful_exit:
                 task = db.change_task(task, "failed", "interrupted")
         db.move_status(DB_PATH, "running", "failed")
         global STOP_EVENT

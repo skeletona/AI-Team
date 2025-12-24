@@ -35,6 +35,12 @@ def run(
         None,
         help="What to run: download website codex (default: all)",
     ),
+    task: str | None = typer.Option(
+        None,
+        "--task",
+        "-t",
+        help="Run codex only for a specific task name",
+    ),
     clean_lst: list[str] = typer.Option(
         None,
         "--clean",
@@ -62,7 +68,8 @@ def run(
     if "website" in services:
         start_background("website", log="flask.log", attach="website" in attach_lst)
     if "codex" in services:
-        start_background("codex", attach="codex" in attach_lst)
+        env_extra = {"CODEX_TASK": task} if task else None
+        start_background("codex", attach="codex" in attach_lst, env_extra=env_extra)
 
 
 @app.command("status")
@@ -293,7 +300,12 @@ def codex(
     run(services=["codex"], clean_lst=clean_lst, attach_lst=attach_lst)
 
 
-def start_background(name: str, log: str = "", attach: bool = False) -> int:
+def start_background(
+    name: str,
+    log: str = "",
+    attach: bool = False,
+    env_extra: dict[str, str] | None = None,
+) -> int:
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     if log:
@@ -305,6 +317,10 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
         warning(f"{name}: can not run: already running")
         return 0
 
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
+
     if attach:
         info(f"{name}: attaching")
         with log_path.open("a", encoding="utf-8") as f:
@@ -312,6 +328,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 [executable, "-m", "src." + name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                env=env,
                 text=True,
                 bufsize=1,
                 start_new_session=True,
@@ -345,6 +362,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 [executable, "-m", "src." + name],
                 stdout=f,
                 stderr=subprocess.STDOUT,
+                env=env,
                 start_new_session=True,
             )
         change_json(Process(name=name, log=str(log_path), pid=p.pid))

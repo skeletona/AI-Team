@@ -64,7 +64,7 @@ body {
 .page-shell {
   position: relative;
   z-index: 2;
-  max-width: 90%;
+  max-width: 96%;
   margin: 0 auto;
   padding: 3rem 1.5rem 4rem;
 }
@@ -195,6 +195,12 @@ body {
   color: #fecaca;
 }
 
+.status-pill.status-block {
+  background: rgba(148, 163, 184, 0.18);
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+}
+
 .hero-link {
   color: var(--accent-2);
   text-decoration: none;
@@ -317,7 +323,7 @@ body {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
   gap: 1.4rem;
   margin-bottom: 2.5rem;
 }
@@ -391,6 +397,10 @@ body {
 .status-item[data-status="failed"],
 .status-item[data-status="stalled"] {
   border-left: 3px solid #fb7185;
+}
+
+.status-item[data-status="block"] {
+  border-left: 3px solid #94a3b8;
 }
 
 .status-top-row {
@@ -527,7 +537,7 @@ body {
 
 .detail-thinking-content pre[data-thinking-target] {
   margin: 0;
-  white-space: pre-wrap;
+  white-space: pre;
 }
 
 .detail-thinking-content pre[data-thinking-target].log-refresh {
@@ -572,18 +582,8 @@ body {
 
 .scroll-fab-active {
   border-color: rgba(125, 211, 252, 0.9);
-  box-shadow: 0 0 18px rgba(56, 189, 248, 0.6),
-    0 18px 32px rgba(2, 6, 23, 0.7);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.45);
   color: #e0f2fe;
-}
-
-.scroll-fab-active::after {
-  content: "";
-  position: absolute;
-  inset: -8px;
-  border-radius: inherit;
-  border: 1px solid rgba(56, 189, 248, 0.45);
-  animation: pulse-glow 1.6s ease-in-out infinite;
 }
 
 .scroll-fab:focus-visible {
@@ -660,6 +660,17 @@ body {
   color: var(--accent-2);
 }
 
+.status-item.dragging {
+  opacity: 0.6;
+  border-color: rgba(14, 165, 233, 0.6);
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.2);
+}
+
+.status-panel.drop-active {
+  border-color: rgba(14, 165, 233, 0.6);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.4), 0 20px 35px rgba(2, 6, 23, 0.55);
+}
+
 
 
 @media (max-width: 768px) {
@@ -706,20 +717,5 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes pulse-glow {
-  0% {
-    opacity: 0.35;
-    transform: scale(1);
-  }
-  60% {
-    opacity: 0.9;
-    transform: scale(1.05);
-  }
-  100% {
-    opacity: 0.35;
-    transform: scale(1);
   }
 }

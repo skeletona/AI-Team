@@ -87,23 +87,28 @@
         </header>
         <div class="status-grid">
           {% macro status_panel(title, items, hint_text) %}
-            <article class="status-panel">
+            <article class="status-panel" data-status="{{ title | lower }}" data-drop-zone>
               <header>
                 <h3>{{ title }}</h3>
                 <span class="status-count">{{ items | length }}</span>
               </header>
-              <p class="hint">{{ hint_text }}</p>
               <div class="status-items">
                 {% if items %}
                   {% for item in items %}
-                    <a href="/task/{{ item.id }}" class="status-item" data-status="{{ item.status | lower }}">
+                    <a
+                      href="/task/{{ item.id }}"
+                      class="status-item"
+                      data-status="{{ item.status | lower }}"
+                      data-task-id="{{ item.id }}"
+                      draggable="true"
+                    >
                       <div class="status-top-row">
                         <p class="task-name">{{ item.name }}</p>
                       </div>
                     </a>
                   {% endfor %}
                 {% else %}
-                  <p class="status-empty">No {{ title | lower }} tasks.</p>
+                  <p class="status-empty">No tasks</p>
                 {% endif %}
               </div>
             </article>
@@ -113,8 +118,69 @@
           {{ status_panel("Running", cards["running"], "Currently burning tokens") }}
           {{ status_panel("Solved", cards["solved"], "Victories") }}
           {{ status_panel("Failed", cards["failed"], "Needs attention") }}
+          {{ status_panel("Block", cards["block"], "Manually blocked from running") }}
         </div>
       </section>
     </main>
+    <script>
+      const draggableItems = document.querySelectorAll('[data-task-id]');
+      const dropZones = document.querySelectorAll('[data-drop-zone]');
+
+      draggableItems.forEach((item) => {
+        item.addEventListener('dragstart', (event) => {
+          event.dataTransfer.setData('text/plain', item.dataset.taskId);
+          event.dataTransfer.effectAllowed = 'move';
+          item.classList.add('dragging');
+        });
+
+        item.addEventListener('dragend', () => {
+          item.classList.remove('dragging');
+        });
+      });
+
+      dropZones.forEach((zone) => {
+        zone.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          zone.classList.add('drop-active');
+        });
+
+        zone.addEventListener('dragleave', () => {
+          zone.classList.remove('drop-active');
+        });
+
+        zone.addEventListener('drop', (event) => {
+          event.preventDefault();
+          zone.classList.remove('drop-active');
+          const taskId = event.dataTransfer.getData('text/plain');
+          const nextStatus = zone.dataset.status;
+          if (!taskId || !nextStatus) {
+            return;
+          }
+          const dragged = document.querySelector(`[data-task-id="${taskId}"]`);
+          const currentStatus = dragged ? dragged.dataset.status : null;
+          if (currentStatus === nextStatus) {
+            return;
+          }
+          fetch(`/api/task/${taskId}/status`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ status: nextStatus }),
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.error) {
+                console.error(data.error);
+                return;
+              }
+              window.location.reload();
+            })
+            .catch((error) => {
+              console.error('Failed to update status', error);
+            });
+        });
+      });
+    </script>
   </body>
 </html>

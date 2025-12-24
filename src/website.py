@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
 import re
+import json
+import os
+import subprocess
+import sys
 from ansi2html import Ansi2HTMLConverter
 
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request, abort
@@ -12,6 +16,7 @@ from . import db
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PERCENT_5H = 0
 PERCENT_WEEK = 0
+TOKENS_SINCE = 0
 
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 sock = Sock(app)
@@ -28,6 +33,49 @@ conv = Ansi2HTMLConverter(
 
 def ansi_to_html(text: str) -> str:
     return conv.convert(text, full=False)
+
+
+def _load_process_registry() -> dict:
+    if not JSON_FILE.exists():
+        return {}
+    try:
+        return json.loads(JSON_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_process_registry(data: dict) -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    with JSON_FILE.open("w", encoding="utf-8") as json_file:
+        json.dump(data, json_file, indent=2)
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def ensure_codex_running(task_name: str | None = None) -> None:
+    data = _load_process_registry()
+    proc = data.get("codex")
+    if proc and _process_alive(proc.get("pid", -1)):
+        return
+    if proc:
+        data.pop("codex", None)
+
+    task_args = ["--task", task_name] if task_name else []
+    command = [sys.executable, str(ROOT / "main.py"), "run", "codex", *task_args]
+    subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
 
 
 def _attempt_from_log_path(path: Path) -> int | None:
@@ -49,6 +97,21 @@ def _list_attempts(task: Task) -> list[int]:
     if current_attempt is not None:
         attempts.add(current_attempt)
     return sorted(attempts)
+
+
+def _next_attempt(task: Task) -> int:
+    attempts = _list_attempts(task)
+    if not attempts:
+        return 1
+    return max(attempts) + 1
+
+
+def _ensure_attempt_log(task: Task) -> None:
+    attempt = _next_attempt(task)
+    log_path = CODEX_DIR / task.name / f"{CODEX_FILE}.{attempt}"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if not log_path.exists():
+        log_path.write_text("[attempt queued via dashboard]\n", encoding="utf-8")
 
 
 def load_log(log_path: Path) -> str | None:
@@ -75,6 +138,9 @@ def task_view_model(task: Task, selected_attempt: int | None = None) -> dict:
         log_path = CODEX_DIR / task.name / f"{CODEX_FILE}.{selected_attempt}"
     text = load_log(log_path)
 
+    if not text:
+        text = "No codex logs"
+
     enable_live = (
         selected_attempt is not None
         and selected_attempt == latest_attempt
@@ -98,8 +164,7 @@ def task_view_model(task: Task, selected_attempt: int | None = None) -> dict:
 
 def stats_view_model() -> dict:
     entries = db.read_entries(DB_PATH)
-    time_now = now()
-    tokens = sum(task.tokens for task in entries if time_now - task.timestamp < 5 * 360)
+    tokens = sum(task.tokens for task in entries if task.timestamp >= TOKENS_SINCE)
 
     # --- Budgets ---
     limit_5h    = 20000000
@@ -121,6 +186,7 @@ def stats_view_model() -> dict:
         "running": [],
         "solved": [],
         "failed": [],
+        "block": [],
     }
     for task in entries:
         cards[task.status].append(task)
@@ -229,6 +295,32 @@ def task_message(task_id: str) -> Response:
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/task/<int:task_id>/status", methods=["POST"])
+def task_status(task_id: int) -> Response:
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip().lower()
+    if status not in ("queued", "running", "solved", "failed", "block"):
+        return jsonify({"error": "invalid status"}), 400
+
+    task = db.get_entry(DB_PATH, str(task_id))
+    if not task:
+        return jsonify({"error": "task not found"}), 404
+
+    if task.status == status:
+        return jsonify({"status": "ok"})
+
+    if task.status == "running" and status != "running":
+        stop_flag = CODEX_DIR / task.name / "stop.flag"
+        stop_flag.parent.mkdir(parents=True, exist_ok=True)
+        stop_flag.write_text("stopped via dashboard", encoding="utf-8")
+
+    db.update_task_status(DB_PATH, task.id, status, error="")
+    if status == "running":
+        _ensure_attempt_log(task)
+        ensure_codex_running(task.name)
+    return jsonify({"status": "ok"})
+
+
 def get_percent() -> tuple[float]:
     proc = subprocess.Popen(
         ["codex", "exec", "--skip-git-repo-check", "say hi"],
@@ -249,9 +341,10 @@ def get_percent() -> tuple[float]:
 
 
 def main():
-    global PERCENT_5H, PERCENT_WEEK
+    global PERCENT_5H, PERCENT_WEEK, TOKENS_SINCE
     info(f"Running website on http://{HOST}:{PORT} (database: {DB_PATH})")
     PERCENT_5H, PERCENT_WEEK = get_percent()
+    TOKENS_SINCE = now()
     app.run(host=HOST, port=PORT, debug=DEBUG_FLASK)
     info("ended")
 
