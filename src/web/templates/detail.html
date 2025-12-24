@@ -40,7 +40,7 @@
             <h2 class="task-name">Live Terminal</h2>
           </header>
           <div class="detail-thinking-content" data-thinking-scroll>
-            <pre data-thinking-target>{{ text }}</pre>
+            <pre data-thinking-target>{{ text|safe }}</pre>
           </div>
         </div>
       </section>
@@ -62,7 +62,7 @@
       const ws = new WebSocket(wsUrl);
 
       ws.onmessage = function(event) {
-        thinkingTarget.textContent += event.data;
+        thinkingTarget.innerHTML += event.data;
         scrollToBottom();
       };
 

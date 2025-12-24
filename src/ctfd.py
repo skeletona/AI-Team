@@ -280,10 +280,10 @@ def start_instance(session: requests.Session, task_id: str) -> bool:
     if not answ["success"]:
         debug(f"Failed to POST instance: HTTP {resp.status_code}: {resp.text}")
         if "Frequency limit" in answ["msg"]:
-            raise f"ctfd_owl frequency limit: {answ}"
+            exception(f"ctfd_owl frequency limit: {answ}")
             return False
         if "You have boot" in answ["msg"]:
-            info(f"Stopping previously running OWL instance: {answ["msg"].split()[2:5]}")
+            info(f"Stopping previously running OWL instance: {answ["msg"].split()[2:-3]}")
             stop_instance(session)
             return start_instance(session, task_id)
         elif not answ["success"]:

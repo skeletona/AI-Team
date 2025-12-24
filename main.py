@@ -314,6 +314,7 @@ def start_background(name: str, log: str = "", attach: bool = False) -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                start_new_session=True,
             )
             proc = Process(name=name, log=str(log_path), pid=p.pid)
             change_json(proc)

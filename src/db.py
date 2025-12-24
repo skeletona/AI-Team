@@ -227,7 +227,6 @@ def change_task(
         raise ValueError("Cannot change category or name of a task")
     
     if attempt:
-        info([CODEX_DIR, task.name, CODEX_FILE, attempt])
         log = CODEX_DIR / task.name / f"{CODEX_FILE}.{attempt}"
     elif log:
         attempt = int(str(log).split(".")[-1])

@@ -38,7 +38,6 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 
 
-
 def is_container_running() -> bool:
     try:
         result = subprocess.run(
@@ -56,6 +55,14 @@ def is_container_running() -> bool:
             if result.stdout.strip() != "true":
                 error("could not run docker container")
                 exit(1)
+
+        result = subprocess.run(
+                ["docker", "exec", "-it", "AI-Team", "curl", "--max-time", "10", CTFD_URL],
+                capture_output=True,
+                text=True
+        )
+        if result.returncode:
+            error("Could not curl CTFd inside docker. Maybe you are using VPN and youre MTU does not match?")
     except Exception as e:
         error(f"Could not run docker container: {e}")
         exit(1)
@@ -69,7 +76,6 @@ def run_codex(task: Task, prompt: str) -> str:
     output = ""
 
     task.log.parent.mkdir(parents=True, exist_ok=True)
-    info(f"task.log: {task.log}")
     with task.log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
@@ -86,15 +92,17 @@ def run_codex(task: Task, prompt: str) -> str:
             assert proc.stdout is not None
             for line in proc.stdout:
                 if len(line) > 1000:
-                    line = line[:1000] + "[truncated]"
+                    line = line[:1000] + "    [truncated]"
                 fh.write(line)
-                print(line.rstrip("\r\n"), flush=True)
+                if MAX_CODEX_WORKERS == 1 or ENABLE_DEBUG:
+                    print(line.rstrip("\r\n"), flush=True)
                 fh.flush()
                 lines.append(line)
             proc.wait(timeout=CODEX_TIMEOUT)
             if proc.returncode:
                 error(f"Codex returned an error code: {proc.returncode}")
         except KeyboardInterrupt:
+            info("Shutting down ...")
             proc.send_signal(signal.SIGTERM)
             return -1
         except Exception as e:
@@ -109,16 +117,6 @@ def run_codex(task: Task, prompt: str) -> str:
     return output
 
 
-
-def local_attachment_names(task: Task) -> list[str]:
-    task_dir = TASKS_DIR / task.name
-    return sorted(
-        p.name
-        for p in task_dir.iterdir()
-        if p.is_file() and p.name != "metadata.json"
-    )
-
-
 def build_codex_prompt(task: Task, instance: bool) -> str:
     context_path = TASKS_DIR / task.name / "codex_context.txt"
     if context_path.exists():
@@ -126,7 +124,7 @@ def build_codex_prompt(task: Task, instance: bool) -> str:
     else:
         context = ""
 
-    parts = CODEX_PROMPT
+    parts = list(CODEX_PROMPT)
     if instance:
         parts += CODEX_OWL_PROMPT
     if context:
@@ -146,8 +144,8 @@ def mark_all_running_failed(reason: str = "marked as failed") -> None:
 
 
 def process_task(task: Task) -> int:
-    info(f"{task.name}: starting")
     """Give MAX_CODEX_ATTEMPTS attempts for one task"""
+    info(f"{task.name}: starting")
     session = ctfd.create_session()
 
     task_dir = TASKS_DIR / task.name
@@ -167,7 +165,7 @@ def process_task(task: Task) -> int:
             return 1
     elif task.id in [t.id for t in ctfd.fetch_tasks(session) if t.status == "solved"]:
         task = db.change_task(task, "solved", "solved by a human")
-        info("skipping %s (%s): solved while queued", task.name, task.id)
+        info(f"{task.name}: Solved while queued, skipping")
         return 0
 
     instance = None
@@ -185,17 +183,18 @@ def process_task(task: Task) -> int:
                 return
 
             info(f"{task.name}: Running codex ({attempt})")
-            task = db.change_task(task, "running", attempt=attempt)
+            task = db.change_task(task, "running", attempt=attempt, error="")
 
             output = run_codex(task, prompt)
 
             result = inspect_output(session, task, output)
             if result != 0 or output == -1:
+                debug("stopping codex ...")
                 break
-
+            
             prompt = prompt + "\n".join([
                 "\n\nThis is incorrect flag."
-                " Keep working and print ONLY the correct final flag."
+                " Keep working and print the correct final flag."
             ])
         else:
             warning(f"max attempts reached for {task.name}")
@@ -249,11 +248,11 @@ def inspect_output(session, task, output) -> int:
         info(f"{task.name}: No flags found")
     for flag in reversed(flags):
         if ctfd.submit_flag(session, task.id, flag):
-            task = db.change_task(task, "solved", flag=flag)
-            info(f"successfull flag found for {task.name}: {flag}")
+            task = db.change_task(task, "solved", flag=flag, error="")
+            info(f"{task.name}: Successfull flag found: {flag}")
             return 1
         else:
-            info(f"{task.name}: incorrect flag found: {flag}")
+            info(f"{task.name}: Incorrect flag found: {flag}")
 
     return 0
 
@@ -307,11 +306,6 @@ def run_tasks():
         info("Exited")
 
 
-def handle_sigterm(signum, frame):
-    info("recieved SIGTERM")
-    raise KeyboardInterrupt
-
-
 def main():
     if not LOGS_DIR.exists():
         debug(f"creating {LOGS_DIR}")
@@ -337,11 +331,9 @@ def main():
         exit(1)
 
     info(f"FLAG_REGEX: {FLAG_RE.pattern}")
-    signal(SIGTERM, handle_sigterm)
     info("Starting Codex worker …")
     run_tasks()
 
 
 if __name__ == "__main__":
     main()
-

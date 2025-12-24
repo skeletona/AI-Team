@@ -6,3 +6,4 @@ gevent
 gevent-websocket
 typer
 subprocess
+ansi2html

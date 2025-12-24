@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
 import re
-from sys import exit
-from html import escape
-from typing import List, Mapping, Optional
+from ansi2html import Ansi2HTMLConverter
 
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request, abort
 from flask_sock import Sock
@@ -23,9 +21,18 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 
 
+conv = Ansi2HTMLConverter(
+    inline=True,   # стили прямо в span'ах
+    dark_bg=True   # под терминал
+)
+
+def ansi_to_html(text: str) -> str:
+    return conv.convert(text, full=False)
+
+
 def load_log(task: Task) -> str | None:
     if task.log.exists():
-        content = strip_ansi(task.log.read_text(encoding="utf-8", errors="replace"))
+        content = ansi_to_html(task.log.read_text(encoding="utf-8", errors="replace"))
     else:
         warning(f"{task.name}: no log file: {task.log}")
         return 
@@ -50,17 +57,17 @@ def task_view_model(task: Task) -> dict:
     }
 
 
-def stats_view_model() -> Mapping[str, object]:
+def stats_view_model() -> dict:
     entries = db.read_entries(DB_PATH)
     time_now = now()
     tokens = sum(task.tokens for task in entries if time_now - task.timestamp < 5 * 360)
 
     # --- Budgets ---
-    limit_5h    = 25000000
+    limit_5h    = 20000000
     limit_week  = 100000000
 
-    tokens_5h   = int(PERCENT_5H * limit_5h / 100 + tokens)
-    tokens_week = int(PERCENT_WEEK * limit_week / 100 + tokens)
+    tokens_5h   = int(PERCENT_5H * limit_5h / 100 - tokens)
+    tokens_week = int(PERCENT_WEEK * limit_week / 100 - tokens)
 
     budgets = {
         "tokens_5h": tokens_5h,
@@ -131,7 +138,7 @@ def load_codex_ws(ws, task_id: str):
             if not line:
                 sleep(1)
             else:
-                ws.send(strip_ansi(line))
+                ws.send(ansi_to_html(line))
 
 
 @app.route("/api/task/<int:task_id>/message", methods=["POST"])
