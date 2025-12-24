@@ -28,8 +28,8 @@ app = typer.Typer(help = "AI-Team",
                   pretty_exceptions_short=True,)
 
 
-@app.command("run")
-@app.command("start", hidden=True)
+@app.command("start")
+@app.command("run", hidden=True)
 def run(
     services: list[str] = typer.Argument(
         None,
@@ -70,47 +70,6 @@ def run(
     if "codex" in services:
         env_extra = {"CODEX_TASK": task} if task else None
         start_background("codex", attach="codex" in attach_lst, env_extra=env_extra)
-
-
-@app.command("status")
-def status(
-    services: list[str] = typer.Argument(
-        None,
-        help="Services to show status for (e.g. website codex)",
-    )
-):
-    """
-    Show status of services
-    """
-    if not services:
-        services = ["codex", "website"]
-
-    
-    for name in services:
-        if name not in PROCS:
-            info(f"{name}: not running".capitalize())
-        else:
-            info(f"{name}: running in background".capitalize())
-
-
-@app.command("attach")
-def attach(
-    services: list[str] = typer.Argument(
-        None,
-        help="Services to show status for (e.g. website codex)",
-    )
-):
-    """
-    Attach to service
-    """
-    if not services:
-        services = ["codex", "website"]
-
-    for name in services:
-        if name not in PROCS:
-            warning(f"{name}: not running".capitalize())
-        else:
-            tail_f(PROCS[name]["log"])
 
 
 @app.command("stop")
@@ -166,6 +125,46 @@ def restart(
         start_background("codex", attach="codex" in attach_lst)
 
 
+@app.command("status")
+def status(
+    services: list[str] = typer.Argument(
+        None,
+        help="Services to show status for (e.g. website codex)",
+    )
+):
+    """
+    Show status
+    """
+    if not services:
+        services = ["codex", "website"]
+
+    
+    for name in services:
+        if name not in PROCS:
+            info(f"{name}: not running".capitalize())
+        else:
+            info(f"{name}: running in background".capitalize())
+
+
+@app.command("attach")
+def attach(
+    services: list[str] = typer.Argument(
+        None,
+        help="Services to show status for (e.g. website codex)",
+    )
+):
+    """
+    Attach to service
+    """
+    if not services:
+        services = ["codex", "website"]
+
+    for name in services:
+        if name not in PROCS:
+            warning(f"{name}: not running".capitalize())
+        else:
+            tail_f(PROCS[name]["log"])
+
 
 @app.command("clean")
 def clean(
@@ -208,7 +207,7 @@ def clean(
 @app.command("db", hidden=True)
 def sql():
     """
-        look inside database
+        Look in database
     """
     subprocess.run(
         ["sqlite3", DB_PATH, ".mode column", '''SELECT
@@ -257,8 +256,8 @@ def download(
     """
     run(services=["download"], clean_lst=clean_lst)
 
-
 @app.command("website")
+@app.command("web", hidden=True)
 def website(
     clean_lst: list[str] = typer.Option(
         None,

@@ -139,7 +139,7 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
                 id=task[CTFD_JSON_FORMAT["id"]],
                 name=task[CTFD_JSON_FORMAT["name"]],
                 timestamp=now(),
-                status="solved" if task["solved_by_me"] else "queued",
+                status="solved" if task[CTFD_JSON_FORMAT["solved"]] else "queued",
                 points=task[CTFD_JSON_FORMAT["points"]],
                 tokens=0,
                 solves=task[CTFD_JSON_FORMAT["solves"]] if CTFD_JSON_FORMAT["solves"] else 0,

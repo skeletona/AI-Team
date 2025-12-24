@@ -1,30 +1,92 @@
-# AI_Team
-Fully automated CTF team
+# AI-Team
+<p align="center">Let AI solve CTF for you!</p>
 
-## Autonomous downloader
+<p align="center">
+  <img src="./.github/website-preview.png" alt="website preview" width="80%" />
+</p>
 
-`autonomous_ctfd.py` logs in as `AI-Team` (configurable via env vars) and
-downloads every challenge attachment smaller than 10 MiB.
+<b>DISCLAIMER</b>: If you want to learn something, <b>DO NOT</b> use AI-Team. It makes you lazy, stupid and may be considered as cheating.
 
-## Configuration
-1. Install dependencies with `pip install -r requirements.txt`.
-2. Change `.env` next to the script with `AI_TEAM_EMAIL=` (or `EMAIL=`) and
-   optionally `AI_TEAM_PASSWORD=`/`TEAM_PASSWORD=`. If you omit the password, the
-   script generates a new one and prints it before attempting registration.
-3. Run `python autonomous_ctfd.py` (set `CTFD_URL`/`TEAM_NAME` for other hosts).
-4. Attachments land under `downloads/`.
+## Requirements
+- `Codex` installed and with available tokens (ChatGPT Plus)
+- `Docker compose`
+- `python 3.13`
 
-If login/registration hits bot protection (HTTP 403/Turnstile) or the site keeps
-showing the login form after the POST (Turnstile markup is still present), the
-script logs a short directive that you must open `CTFD_URL/login` (or `/register`)
-in a browser, solve the challenge with the same credentials (the password is
-printed when it is auto-generated), and rerun once the account exists.
+## Quickstart
 
-When the challenge API returns 403 because the account still isn’t part of any
-team, the script calls `POST /api/v1/teams` to create a team entry for the current
-user and retries the download automatically.
+### Install and run AI-Team
+
+Installation
+```shell
+git clone https://github.com/skeletona/AI-Team && cd AI_Team
+```
+
+```shell
+pip install -r requirements.txt
+```
+
+Change settings (CTFd URL, login and password):
+```shell
+vim .env
+```
+
+And then run:
+```shell
+./main.py run
+```
+
+After tasks downloaded, you can go to http://localhost:8000
+
+## Usage
+Available commands:
+| Command   | Purpose                  | Example usage
+| --------- | ------------------------ | ----------------------------------------- |
+| `start`   | Run AI-Team              | `./main run codex website --attach codex` |
+| `stop`    | Run Codex for every task | `./main stop web`                         |
+| `restart` | Restart service          | `./main restart website -a`               |
+| `status`  | Show status              | `./main status`                           |
+| `attach`  | Attach to service        | `./main attach codex`                     |
+| `clean`   | Cleaning                 | `./main clean all`                        |
+| `sql`     | Look in database         | `./main sql`                              |
+
+### Completions
+You can add AI-Team commands to shell completions
+```shell
+./main --install-completion
+export PATH="$PATH:."
+exec $SHELL
+```
+<b>Careful</b>: Works only if current directory is in PATH)
+
+## Configuring
+
+Look in `.env` if you want to change something
 
 ## How it works
-- `extract_tasks.py` logins and downloads tasks from ctfd api
-- `run_codex` starts a codex window for every task
-- `serve_stats.py` starts a flask webserver on http://localhost:8000 to see statistics of AI-Team
+
+| File         | Purpose                  | Usage               |
+| ------------ | ------------------------ | ------------------- |
+| `.env`       | Settings                 | `vim .env`          |
+| `main.py`    | User commands            | `./main -h`         |
+| `ctfd.py`    | Download tasks from CTFd | `./main download`   |
+| `codex.py`   | Run Codex for every task | `./main codex -a`   |
+| `website.py` | Flask server             | `./main website -a` |
+| `db.py`      | Interact with sqlite3    | `./main sql`        |
+| `models.py`  | Auxiliary garbage        |                     |
+
+## Features
+- All Codexes runs in docker
+- Multiple attempts on one task
+- Manually changing tasks status
+- Modifiable prompts
+- Codex logs on website
+
+#### TODOs (maybe)
+- Codex logs summarization
+- Full-fledged chat window
+- Other AIs support (Gemini CLI)
+- Non-CTFd boards
+- AI-manager of AIs
+- Rewrite all in Rust 🦀
+- Extended statistics
+- Attack-Defense support

@@ -38,20 +38,42 @@ class Process:
 
 load_dotenv()
 
+
+############
+# REQUIRED #
+############
+
 CTFD_URL        = os.environ["CTFD_URL"].rstrip("/")
 TEAM_EMAIL      = os.environ.get("AI_TEAM_EMAIL")
 TEAM_PASSWORD   = os.environ.get("AI_TEAM_PASSWORD")
 TEAM_NAME       = os.environ.get("AI_TEAM_NAME")
 FLAG_FORMAT = os.environ.get("FLAG_FORMAT")
 
-MAX_ATTACHMENT_SIZE = int(os.environ.get("MAX_ATTACHMENT_SIZE", 10))
-MAX_CODEX_ATTEMPTS  = int(os.environ.get("MAX_CODEX_ATTEMPTS", "3"))
-MAX_CODEX_WORKERS   = int(os.environ.get("MAX_CODEX_WORKERS"))
-CODEX_TIMEOUT       = int(os.environ.get("CODEX_TIMEOUT") or 60) * 60
-TARGET_POINTS       = int(os.environ.get("TARGET_POINTS") or 0)
-MAX_CODEX_TOKEN     = int(os.environ.get("MAX_CODEX_TOKENS") or 0)
+
+##########
+# COMMON #
+##########
+
 MODEL               = os.environ.get("MODEL")
-CODEX_COMMAND = ["docker", "exec", "-it", "AI-Team", "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL, "-c", "model_reasoning_effort=low", "--skip-git-repo-check"]
+REASONING           = os.environ.get("REASONING", "low")
+PORT                = os.environ.get("FLASK_PORT", 8000)
+MAX_CODEX_TOKENS    = int(os.environ.get("MAX_CODEX_TOKENS") or 0)  # TODO
+MAX_CODEX_WORKERS   = int(os.environ.get("MAX_CODEX_WORKERS"))
+MAX_CODEX_ATTEMPTS  = int(os.environ.get("MAX_CODEX_ATTEMPTS", "3"))
+CODEX_TIMEOUT       = int(os.environ.get("CODEX_TIMEOUT") or 60) * 60
+MAX_ATTACHMENT_SIZE = int(os.environ.get("MAX_ATTACHMENT_SIZE", 10))
+
+
+############
+# ADVANCED #
+############
+
+ENABLE_DEBUG = os.environ.get("DEBUG", "False")
+FLAG_REGEX = os.environ.get("FLAG_REGEX")
+TARGET_POINTS       = int(os.environ.get("TARGET_POINTS") or 0)
+HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
+DEBUG_FLASK = os.environ.get("DEBUG_FLASK", False)
+basicConfig(level=DEBUG if ENABLE_DEBUG.lower() == "true" else INFO, format="%(levelname)s: %(message)s", force=True)
 
 ROOT        = Path(__file__).resolve().parent.parent
 DB_PATH     = ROOT / os.environ.get("DB_PATH", "tasks.db")
@@ -61,33 +83,12 @@ LOGS_DIR    = ROOT / os.environ.get("LOGS_DIR", "logs")
 JSON_FILE   = LOGS_DIR / os.environ.get("JSON_FILE", "running.json")
 CODEX_FILE  = os.environ.get("CODEX_FILE", "codex.log")
 
-FLAG_REGEX = os.environ.get("FLAG_REGEX")
-HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
-PORT = os.environ.get("FLASK_PORT", 8000)
-DEBUG_FLASK = os.environ.get("DEBUG_FLASK", False)
-ENABLE_DEBUG = os.environ.get("DEBUG", False)
 
-if ENABLE_DEBUG.lower() == "true":
-    basicConfig(level=DEBUG, format="%(levelname)s: %(message)s", force=True)
-else:
-    basicConfig(level=INFO, format="%(levelname)s: %(message)s", force=True)
+###########
+#  CODEX  #
+###########
 
-
-############
-# NON-CTFD #
-############
-
-CTFD_OWL                = os.environ.get("CTFD_OWL", False)
-CTFD_TASK_API           = os.environ.get("CTFD_TASK_API", "/api/v1/challenges/")
-CTFD_TASKS_API          = os.environ.get("CTFD_TASKS_API", "/api/v1/challenges")
-CTFD_TASKS_JSON_LIST    = os.environ.get("CTFD_TASKS_PATH", "data")
-CTFD_TASK_DETAIL_LIST   = os.environ.get("CTFD_DETAIL_PATH", "data")
-CTFD_FILES_JSON         = os.environ.get("CTFD_FILES_PATH", "files")
-CTFD_DOWNLOAD_API       = os.environ.get("CTFD_DOWNLOAD_API", "/files/")
-CTFD_SUBMIT_API         = os.environ.get("CTFD_SUBMIT_API", "/api/v1/challenges/attempt")
-CTFD_SUBMIT_PATH        = os.environ.get("CTFD_SUBMIT_PATH", "")
-CTFD_SKIP_LOGIN    = bool(os.environ.get("CTFD_SKIP_LOGIN", False))
-
+CODEX_COMMAND = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL, "-c", f"model_reasoning_effort={REASONING}", "--skip-git-repo-check"]
 
 raw = os.environ.get("CODEX_PROMPT")
 if raw:
@@ -112,6 +113,23 @@ else:
         "Do not stop instance before exiting."
     ]
 
+
+############
+# NON-CTFD #
+############
+
+CTFD_OWL                = os.environ.get("CTFD_OWL", False)
+CTFD_TASK_API           = os.environ.get("CTFD_TASK_API", "/api/v1/challenges/")
+CTFD_TASKS_API          = os.environ.get("CTFD_TASKS_API", "/api/v1/challenges")
+CTFD_TASKS_JSON_LIST    = os.environ.get("CTFD_TASKS_PATH", "data")
+CTFD_TASK_DETAIL_LIST   = os.environ.get("CTFD_DETAIL_PATH", "data")
+CTFD_FILES_JSON         = os.environ.get("CTFD_FILES_PATH", "files")
+CTFD_DOWNLOAD_API       = os.environ.get("CTFD_DOWNLOAD_API", "/files/")
+CTFD_SUBMIT_API         = os.environ.get("CTFD_SUBMIT_API", "/api/v1/challenges/attempt")
+CTFD_SUBMIT_PATH        = os.environ.get("CTFD_SUBMIT_PATH", "")
+CTFD_SKIP_LOGIN    = bool(os.environ.get("CTFD_SKIP_LOGIN", False))
+
+
 raw = os.environ.get("CTFD_HEADERS")
 if raw:
     CTFD_HEADERS = json.loads(raw)
@@ -130,10 +148,11 @@ if raw:
     CTFD_JSON_FORMAT = json.loads(raw)
 else:
     CTFD_JSON_FORMAT = {
-        "id": "id",
-        "name": "name",
-        "points": "value",
-        "solves": "solves",
-        "category": "category"
+        "id":       "id",
+        "name":     "name",
+        "points":   "value",
+        "solves":   "solves",
+        "category": "category",
+        "solved":   "solved_by_me",
     }
 

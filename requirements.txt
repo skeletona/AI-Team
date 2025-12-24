@@ -1,9 +1,6 @@
-requests
-python-dotenv
 flask
 flask-sock
-gevent
-gevent-websocket
-typer
-subprocess
 ansi2html
+python-dotenv
+requests
+typer

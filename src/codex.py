@@ -72,7 +72,7 @@ def is_container_running() -> bool:
 def run_codex(task: Task, prompt: str) -> str:
     is_container_running()
 
-    command = CODEX_COMMAND + ["-C", f"/tasks/{task.name}"] + [prompt]
+    command = ["docker", "exec", "-it", "AI-Team"] + CODEX_COMMAND + ["-C", f"/tasks/{task.name}"] + [prompt]
     completed_normally = False
     output = ""
     stop_flag = CODEX_DIR / task.name / "stop.flag"
