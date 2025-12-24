@@ -37,24 +37,28 @@ body {
   opacity: 0.55;
   pointer-events: none;
   mix-blend-mode: screen;
+  animation: orb-float 18s ease-in-out infinite;
 }
 
 .orb-one {
   top: -120px;
   right: -80px;
   background: linear-gradient(135deg, rgba(125, 211, 252, 0.3), rgba(14, 165, 233, 0.6));
+  animation-delay: -2s;
 }
 
 .orb-two {
   bottom: -200px;
   left: -40px;
   background: linear-gradient(135deg, rgba(236, 72, 153, 0.35), rgba(245, 158, 11, 0.5));
+  animation-delay: -6s;
 }
 
 .orb-three {
   top: 30%;
   left: 40%;
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.35), rgba(6, 182, 212, 0.3));
+  animation-delay: -10s;
 }
 
 .page-shell {
@@ -104,6 +108,62 @@ body {
   flex-direction: column;
   gap: 0.5rem;
   align-items: flex-end;
+}
+
+.attempt-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.attempt-tabs-header {
+  margin-bottom: 0;
+  align-self: stretch;
+  gap: 0;
+  padding: 0;
+  background: rgba(2, 6, 23, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.6);
+  overflow: hidden;
+}
+
+.attempt-tab {
+  background: transparent;
+  color: rgba(226, 232, 240, 0.7);
+  border: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.attempt-tab:hover {
+  color: #e0f2fe;
+}
+
+.attempt-tab:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.attempt-tab-active {
+  background: rgba(15, 23, 42, 0.95);
+  color: #e2e8f0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.attempt-tab:last-child {
+  border-right: 0;
 }
 
 .status-pill {
@@ -462,11 +522,16 @@ body {
   border-radius: 8px;
   padding: 1rem;
   border: 1px solid var(--border);
+  animation: lift-in 0.6s ease-out both;
 }
 
 .detail-thinking-content pre[data-thinking-target] {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.detail-thinking-content pre[data-thinking-target].log-refresh {
+  animation: log-fade 0.35s ease-out;
 }
 
 .detail-empty {
@@ -479,6 +544,51 @@ body {
   border-radius: 16px;
   padding: 1.5rem;
   box-shadow: 0 25px 45px rgba(2, 6, 23, 0.7);
+}
+
+.scroll-fab {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--text);
+  font-size: 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 16px 30px rgba(2, 6, 23, 0.55);
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+  z-index: 5;
+}
+
+.scroll-fab:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-2);
+  background: rgba(15, 23, 42, 0.95);
+}
+
+.scroll-fab-active {
+  border-color: rgba(125, 211, 252, 0.9);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.6),
+    0 18px 32px rgba(2, 6, 23, 0.7);
+  color: #e0f2fe;
+}
+
+.scroll-fab-active::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: inherit;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  animation: pulse-glow 1.6s ease-in-out infinite;
+}
+
+.scroll-fab:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
 }
 
 .thinking-card-header {
@@ -562,5 +672,54 @@ body {
   }
   .status-panel {
     min-height: auto;
+  }
+}
+
+@keyframes orb-float {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(12px, -16px) scale(1.05);
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+@keyframes lift-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes log-fade {
+  from {
+    opacity: 0.4;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-glow {
+  0% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  60% {
+    opacity: 0.9;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
   }
 }

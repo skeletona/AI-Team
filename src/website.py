@@ -30,21 +30,56 @@ def ansi_to_html(text: str) -> str:
     return conv.convert(text, full=False)
 
 
-def load_log(task: Task) -> str | None:
-    if task.log.exists():
-        content = ansi_to_html(task.log.read_text(encoding="utf-8", errors="replace"))
+def _attempt_from_log_path(path: Path) -> int | None:
+    match = re.search(r"\.(\d+)$", path.name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _list_attempts(task: Task) -> list[int]:
+    task_dir = CODEX_DIR / task.name
+    attempts: set[int] = set()
+    if task_dir.exists():
+        for log_path in task_dir.glob(f"{CODEX_FILE}.*"):
+            attempt = _attempt_from_log_path(log_path)
+            if attempt is not None:
+                attempts.add(attempt)
+    current_attempt = _attempt_from_log_path(task.log)
+    if current_attempt is not None:
+        attempts.add(current_attempt)
+    return sorted(attempts)
+
+
+def load_log(log_path: Path) -> str | None:
+    if log_path.exists():
+        content = ansi_to_html(log_path.read_text(encoding="utf-8", errors="replace"))
     else:
-        warning(f"{task.name}: no log file: {task.log}")
+        warning(f"no log file: {log_path}")
         return 
     return content
 
 
-def task_view_model(task: Task) -> dict:
+def task_view_model(task: Task, selected_attempt: int | None = None) -> dict:
     if not task:
         error("task_view_model but task does not exist")
         return {}
 
-    text = load_log(task)
+    attempts = _list_attempts(task)
+    latest_attempt = max(attempts) if attempts else None
+    if selected_attempt is None or selected_attempt not in attempts:
+        selected_attempt = latest_attempt
+
+    log_path = task.log
+    if selected_attempt is not None:
+        log_path = CODEX_DIR / task.name / f"{CODEX_FILE}.{selected_attempt}"
+    text = load_log(log_path)
+
+    enable_live = (
+        selected_attempt is not None
+        and selected_attempt == latest_attempt
+        and task.status == "running"
+    )
 
     return {
         "title": task.name,
@@ -54,6 +89,10 @@ def task_view_model(task: Task) -> dict:
         "tokens": task.tokens,
         "text": text,
         "latest_status": task.status,
+        "attempts": attempts,
+        "selected_attempt": selected_attempt,
+        "latest_attempt": latest_attempt,
+        "enable_live": enable_live,
     }
 
 
@@ -110,9 +149,27 @@ def task_detail(task_id: str) -> Response:
     if not task:
         abort(404)
 
-    context = task_view_model(task)
+    selected_attempt = request.args.get("attempt", type=int)
+    context = task_view_model(task, selected_attempt)
     html = render_template("detail.html", **context)
     return Response(html, mimetype="text/html")
+
+
+@app.route("/task/<string:task_id>/log", methods=["GET"])
+def task_log(task_id: str) -> Response:
+    task = db.get_entry(DB_PATH, task_id)
+    if not task:
+        abort(404)
+
+    selected_attempt = request.args.get("attempt", type=int)
+    context = task_view_model(task, selected_attempt)
+    payload = {
+        "text": context.get("text"),
+        "selected_attempt": context.get("selected_attempt"),
+        "latest_attempt": context.get("latest_attempt"),
+        "enable_live": context.get("enable_live"),
+    }
+    return jsonify(payload)
 
 
 @sock.route("/task/<string:task_id>/update")
