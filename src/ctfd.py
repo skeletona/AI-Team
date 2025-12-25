@@ -14,22 +14,25 @@ def login(session: requests.Session) -> bool:
         error("AI_TEAM_EMAIL/AI_TEAM_PASSWORD must be set for submissions")
         return False
     try:
-        token = fetch_csrf_token(session, "/login")
+        token = fetch_csrf_token(session, CTFD_LOGIN_API)
     except Exception as exc:
         warning("login CSRF fetch failed: %s", exc)
         return False
     payload = {
         "name": TEAM_EMAIL,
+        "username" : TEAM_EMAIL,
         "password": TEAM_PASSWORD,
         "nonce": token,
     }
-    resp = session.post(urljoin(CTFD_URL, "/login"), data=payload)
+    debug(session.headers)
+    debug(session.cookies)
+    resp = session.post(urljoin(CTFD_URL, CTFD_LOGIN_API), data=payload)
     body = resp.text.lower()
     if resp.status_code == 403 or "cf-turnstile" in body:
-        error("login blocked by Turnstile/firewall")
+        error("login blocked by Cloudflare.")
         return False
     if resp.status_code >= 400 or "invalid username or password" in body:
-        error("login failed (status %s)", resp.status_code)
+        error(f"Login failed: {resp.status_code} {resp.headers} {body}")
         return False
     return is_logged_in(session)
 
@@ -108,6 +111,9 @@ def submit_flag(session: requests.Session, challenge_id: str, flag: str) -> bool
 
 
 def fetch_csrf_token(session: requests.Session, path: str) -> str:
+    if SKIP_FETCH_CSRF:
+        return ""
+
     url = urljoin(CTFD_URL, path)
     resp = session.get(url)
     resp.raise_for_status()

@@ -2,13 +2,13 @@
 <p align="center">Let AI solve CTF for you!</p>
 
 <p align="center">
-  <img src="./.github/website-preview.png" alt="website preview" width="80%" />
+  <img src="./.github/website-preview.png" alt="website preview"/>
 </p>
 
 <b>DISCLAIMER</b>: If you want to learn something, <b>DO NOT</b> use AI-Team. It makes you lazy, stupid and may be considered as cheating.
 
 ## Requirements
-- `Codex` installed and with available tokens (ChatGPT Plus)
+- `Codex` installed with tokens (ChatGPT Plus)
 - `Docker compose`
 - `python 3.13`
 
@@ -18,24 +18,24 @@
 
 Installation
 ```shell
-git clone https://github.com/skeletona/AI-Team && cd AI_Team
+git clone https://github.com/skeletona/AI-Team && cd AI-Team
 ```
 
 ```shell
 pip install -r requirements.txt
 ```
 
-Change settings (CTFd URL, login and password):
+Change settings (login and password):
 ```shell
 vim .env
 ```
 
 And then run:
 ```shell
-./main.py run
+./main run
 ```
 
-After tasks downloaded, you can go to http://localhost:8000
+After the tasks are downloaded, you can go to http://localhost:8000
 
 ## Usage
 Available commands:
@@ -56,7 +56,7 @@ You can add AI-Team commands to shell completions
 export PATH="$PATH:."
 exec $SHELL
 ```
-<b>Careful</b>: Works only if current directory is in PATH)
+<b>Careful</b>: Works only if current directory is in PATH
 
 ## Configuring
 
@@ -82,6 +82,7 @@ Look in `.env` if you want to change something
 - Codex logs on website
 
 #### TODOs (maybe)
+- Web-configurator for .env
 - Codex logs summarization
 - Full-fledged chat window
 - Other AIs support (Gemini CLI)

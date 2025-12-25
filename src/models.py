@@ -128,6 +128,8 @@ CTFD_DOWNLOAD_API       = os.environ.get("CTFD_DOWNLOAD_API", "/files/")
 CTFD_SUBMIT_API         = os.environ.get("CTFD_SUBMIT_API", "/api/v1/challenges/attempt")
 CTFD_SUBMIT_PATH        = os.environ.get("CTFD_SUBMIT_PATH", "")
 CTFD_SKIP_LOGIN    = bool(os.environ.get("CTFD_SKIP_LOGIN", False))
+CTFD_LOGIN_API          = os.environ.get("CTFD_LOGIN_API", "/login")
+SKIP_FETCH_CSRF         = os.environ.get("SKIP_FETCH_CSRF", False)
 
 
 raw = os.environ.get("CTFD_HEADERS")

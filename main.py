@@ -57,7 +57,10 @@ def run(
     """
     Run AI-Team
     """
-    
+    if not attach_lst and len(services) > 1:
+        typer.echo("You cannot attach to multiple services simultaniously!")
+        return
+
     if clean:
         clean(clean_lst)
 
@@ -66,10 +69,10 @@ def run(
     if "download" in services:
         start_background("ctfd", attach=1)
     if "website" in services:
-        start_background("website", log="flask.log", attach="website" in attach_lst)
+        start_background("website", log="flask.log", attach=("website" in attach_lst or not attach_lst))
     if "codex" in services:
         env_extra = {"CODEX_TASK": task} if task else None
-        start_background("codex", attach="codex" in attach_lst, env_extra=env_extra)
+        start_background("codex", attach=("codex" in attach_lst or not attach_lst), env_extra=env_extra)
 
 
 @app.command("stop")
@@ -82,7 +85,6 @@ def stop(
     """
     Stop AI-Team
     """
-
     if not services:
         services = ["website", "codex"]
 
@@ -109,7 +111,6 @@ def restart(
     """
     Restart AI-Team
     """
-
     if not services:
         services = ["website", "codex"]
 
@@ -449,5 +450,9 @@ if __name__ == "__main__":
                     change_json(Process(**proc), delete=True)
     else:
         PROCS = dict()
+
+    if CTFD_URL == "https://ctfd.io" or TEAM_EMAIL == "support@openai.com":
+        warning("You have to change settings in .env!\nRun vim .env")
+        exit(1)
 
     app()
