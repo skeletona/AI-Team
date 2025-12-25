@@ -2,7 +2,7 @@
 
 import sqlite3
 
-from src.models import *
+from python.models import *
 
 _INITIALIZED: set[str] = set()
 EXPECTED_COLUMNS = [
@@ -40,16 +40,16 @@ def _create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
-            id        TEXT PRIMARY KEY,
             timestamp INTEGER,
+            id        TEXT PRIMARY KEY,
             name      TEXT,
             status    TEXT,
+            attempt   INTEGER,
+            tokens    INTEGER,
             points    INTEGER,
             solves    INTEGER,
             category  TEXT,
             flag      TEXT,
-            attempt   INTEGER,
-            tokens    INTEGER,
             error     TEXT
         )
         """

@@ -5,8 +5,8 @@ from urllib.parse import unquote, urljoin
 
 import requests
 
-from src import db
-from src import *
+from python import db
+from python import *
 
 
 def login(session: requests.Session) -> bool:

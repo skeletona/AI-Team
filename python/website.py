@@ -10,7 +10,7 @@ from ansi2html import Ansi2HTMLConverter
 from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, url_for, request, abort
 from flask_sock import Sock
 
-from src.models import *
+from python.models import *
 from . import db
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

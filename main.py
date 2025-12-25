@@ -5,8 +5,8 @@ try:
     from shutil import rmtree
     import typer
 
-    from src import *
-    from src import codex, website, ctfd
+    from python import *
+    from python import codex, website, ctfd
 
 except ModuleNotFoundError as e:
     print("Run pip install -r requirements.txt\n")
@@ -325,7 +325,7 @@ def start_background(
         info(f"{name}: attaching")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [executable, "-m", "src." + name],
+                [executable, "-m", "python." + name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
@@ -359,7 +359,7 @@ def start_background(
         info(f"{name}: Starting")
         with log_path.open("a", encoding="utf-8") as f:
             p = subprocess.Popen(
-                [executable, "-m", "src." + name],
+                [executable, "-m", "python." + name],
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 env=env,

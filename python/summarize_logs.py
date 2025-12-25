@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from src.models import *
+from python.models import *
 
 def read_text(path: Path, limit: int = 120_000) -> str:
     try:

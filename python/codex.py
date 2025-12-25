@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-from src.models import *
-from src import db, ctfd
+from python.models import *
+from python import db, ctfd
 
 from random import shuffle
 import re
