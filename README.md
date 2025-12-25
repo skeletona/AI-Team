@@ -64,15 +64,16 @@ Look in `.env` if you want to change something
 
 ## How it works
 
-| File         | Purpose                  | Usage               |
-| ------------ | ------------------------ | ------------------- |
-| `.env`       | Settings                 | `vim .env`          |
-| `main.py`    | User commands            | `./main -h`         |
-| `ctfd.py`    | Download tasks from CTFd | `./main download`   |
-| `codex.py`   | Run Codex for every task | `./main codex -a`   |
-| `website.py` | Flask server             | `./main website -a` |
-| `db.py`      | Interact with sqlite3    | `./main sql`        |
-| `models.py`  | Auxiliary garbage        |                     |
+| File                | Purpose                  | Usage               |
+| ------------------- | ------------------------ | ------------------- |
+| `.env`              | Settings                 | `vim .env`          |
+| `main.py`           | User commands            | `./main -h`         |
+| `ctfd.py`           | Download tasks from CTFd | `./main download`   |
+| `codex.py`          | Run Codex for every task | `./main codex -a`   |
+| `website.py`        | Flask server             | `./main website -a` |
+| `db.py`             | Interact with sqlite3    | `./main sql`        |
+| `models.py`         | Auxiliary garbage        |                     |
+| `logs/running.json` | Info about processes     |                   |
 
 ## Features
 - All Codexes runs in docker
