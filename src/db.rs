@@ -3,17 +3,17 @@ use rusqlite::{Connection, Result, OptionalExtension};
 
 #[derive(Debug)]
 pub struct Task {
-    timestamp:  i64,
-    id:         String,
-    name:       String,
-    status:     String,
-    attempt:    i64,
-    tokens:     i64,
-    points:     i64,
-    solves:     i64,
-    category:   String,
-    flag:       String,
-    error:      String,
+    pub timestamp:  i32,
+    pub id:         String,
+    pub name:       String,
+    pub status:     String,
+    pub attempt:    i32,
+    pub tokens:     i32,
+    pub points:     i32,
+    pub solves:     i32,
+    pub category:   String,
+    pub flag:       String,
+    pub error:      String,
 }
 
 
@@ -21,16 +21,16 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute("
             CREATE TABLE IF NOT EXISTS tasks (
             timestamp INTEGER,
-            id        TEXT PRIMARY KEY,
-            name      TEXT,
-            status    TEXT    NOT NULL,
+            id        VARCHAR(100) PRIMARY KEY,
+            name      VARCHAR(100),
+            status    VARCHAR(10)    NOT NULL,
             attempt   INTEGER NOT NULL,
             tokens    INTEGER NOT NULL,
             points    INTEGER,
             solves    INTEGER,
-            category  TEXT,
-            flag      TEXT,
-            error     TEXT
+            category  VARCHAR(100),
+            flag      VARCHAR(100),
+            error     VARCHAR(100)
             )",
             ()
     )?;

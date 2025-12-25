@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Task Log</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+
+  <body>
+    <div class="orb orb-one"></div>
+    <div class="orb orb-two"></div>
+    <div class="orb orb-three"></div>
+    <main class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AI-Team · Detailed Thinking</p>
+          <h1>Challenge #{{ task.id }}</h1>
+          <p class="hero-subtitle">
+            {{ task.name }}
+          </p>
+        </div>
+        <div class="hero-meta">
+          <span class="status-pill status-{{ task.status }}">
+            {{ task.status }}
+          </span>
+          <a class="hero-link hero-back" href="/">← Back to dashboard</a>
+        </div>
+      </header>
+
+      <section class="detail-view">
+        {% if task.attempt != 0 %}
+          <div class="attempt-tabs attempt-tabs-header" role="tablist" aria-label="Log attempts">
+            {% for tab in 1..task.attempt %}
+              <button
+                class="attempt-tab attempt-tab-browser {% if tab == task.attempt %}attempt-tab-active{% endif %}"
+                type="button"
+                data-attempt="{{ tab }}"
+                data-url="{{ task.id }}/{{ tab }}"
+                role="tab"
+                aria-selected="{% if tab == task.attempt %}true{% else %}false{% endif %}"
+              >
+                Attempt {{ tab }}
+              </button>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <div class="thinking-card detail-thinking-card">
+          <div class="detail-thinking-content" data-thinking-scroll>
+            <pre data-thinking-target>{{ log }}</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+    <button class="scroll-fab" type="button" title="Scroll to bottom" data-scroll-fab>
+      ↓
+    </button>
+
+    <script>
+      const thinkingTarget = document.querySelector('[data-thinking-target]');
+      const scrollFab = document.querySelector('[data-scroll-fab]');
+      const taskId = {{ task.id }};
+      let enableLive = true;
+      let activeSocket = null;
+      let autoScrollEnabled = false;
+
+      function scrollToBottom() {
+        scrollHeight = document.body.scrollHeight;
+        window.scrollTo({ top: scrollHeight, behavior: "smooth" });
+      }
+      if (scrollFab) {
+        scrollFab.addEventListener('click', function() {
+          autoScrollEnabled = !autoScrollEnabled;
+          scrollFab.classList.toggle('scroll-fab-active', autoScrollEnabled);
+          scrollToBottom();
+        });
+      }
+
+      const attemptTabs = document.querySelectorAll('.attempt-tab');
+      function stopLive() {
+        if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+          activeSocket.close();
+        }
+        activeSocket = null;
+      }
+
+      function startLive() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/task/${taskId}/update`;
+        const ws = new WebSocket(wsUrl);
+        activeSocket = ws;
+
+        ws.onmessage = function(event) {
+          thinkingTarget.innerHTML += event.data;
+          if (autoScrollEnabled) {
+            scrollToBottom();
+          }
+        };
+
+        ws.onopen = function() {
+          console.log("WebSocket connected.");
+          ws.send("start_log_stream:{{ task.id }}");
+        };
+
+        ws.onclose = function() {
+          console.log('WebSocket connection closed');
+        };
+
+        ws.onerror = function(error) {
+          console.error('WebSocket error:', error);
+        };
+      }
+
+      function updateLog(attempt) {
+        const url = `/task/${taskId}/log?attempt=${attempt}`;
+        fetch(url)
+          .then((response) => response.json())
+          .then((data) => {
+            thinkingTarget.innerHTML = data.text || "";
+            thinkingTarget.classList.remove("log-refresh");
+            void thinkingTarget.offsetWidth;
+            thinkingTarget.classList.add("log-refresh");
+            enableLive = !!data.enable_live;
+            stopLive();
+            if (enableLive) {
+              startLive();
+              if (autoScrollEnabled) {
+                scrollToBottom();
+              }
+            }
+          })
+          .catch((error) => {
+            console.error("Failed to load log:", error);
+          });
+      }
+
+      attemptTabs.forEach((tab) => {
+        tab.addEventListener('click', function(event) {
+          const nextAttempt = event.currentTarget.dataset.attempt;
+          const nextUrl = event.currentTarget.dataset.url;
+          if (!nextAttempt || !nextUrl) {
+            return;
+          }
+          attemptTabs.forEach((el) => {
+            el.classList.remove('attempt-tab-active');
+            el.setAttribute('aria-selected', 'false');
+          });
+          event.currentTarget.classList.add('attempt-tab-active');
+          event.currentTarget.setAttribute('aria-selected', 'true');
+          const url = new URL(nextUrl, window.location.origin);
+          history.replaceState(null, "", url.pathname + url.search);
+          updateLog(nextAttempt);
+        });
+      });
+
+      if (enableLive) {
+        startLive();
+      }
+
+      window.addEventListener('beforeunload', function() {
+        stopLive();
+      });
+    </script>
+  </body>
+</html>
