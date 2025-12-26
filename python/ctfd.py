@@ -147,6 +147,7 @@ def fetch_tasks(session: requests.Session) -> list[Task]:
                 timestamp=now(),
                 status="solved" if task[CTFD_JSON_FORMAT["solved"]] else "queued",
                 points=task[CTFD_JSON_FORMAT["points"]],
+                attempt=0,
                 tokens=0,
                 solves=task[CTFD_JSON_FORMAT["solves"]] if CTFD_JSON_FORMAT["solves"] else 0,
                 category=task[CTFD_JSON_FORMAT["category"]] if CTFD_JSON_FORMAT["category"] else "",

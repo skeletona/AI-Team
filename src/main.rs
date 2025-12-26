@@ -1,7 +1,5 @@
 #![warn(clippy::all)]
 
-mod db;
-
 use tower_http::services::ServeDir;
 use std::collections::HashMap;
 use askama::Template;
@@ -13,49 +11,56 @@ use axum::{
     Router,
 };
 
+mod db;
+use db::{Task, TaskStatus};
+
 
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
-    tokens_used: i32,
-    fill_5h:     i32,
-    fill_week:   i32,
-    runs:        i32,
-    flags:       i32,
-    cards: HashMap<String, Vec<db::Task>>,
+    tokens_used: u32,
+    fill_5h:     f32,
+    fill_week:   f32,
+    runs:        u16,
+    flags:       u8,
+    cards: HashMap<TaskStatus, Vec<Task>>,
 }
 
 #[derive(Template)]
 #[template(path = "task.html")]
 struct TaskTemplate {
-    task:   db::Task,
+    task:   Task,
     log:    String,
 }
 
 
 async fn index() -> Result<Html<String>, (StatusCode, String)> {
-    let mut cards = HashMap::from([
-        ("queued" .into(), Vec::new()),
-        ("running".into(), Vec::new()),
-        ("solved" .into(), Vec::new()),
-        ("failed" .into(), Vec::new()),
-        ("blocked".into(), Vec::new()),
+    let mut cards: HashMap<TaskStatus, Vec<Task>> = HashMap::from([
+        (TaskStatus::Queued,  Vec::new()),
+        (TaskStatus::Running, Vec::new()),
+        (TaskStatus::Solved,  Vec::new()),
+        (TaskStatus::Failed,  Vec::new()),
+        (TaskStatus::Blocked, Vec::new()),
     ]);
     let mut runs = 0;
     let mut flags = 0;
 
     let tasks = db::list_tasks().map_err(internal_error)?;
     for task in tasks {
-        runs += task.attempt;
+        runs += task.attempt as u16;
         if task.flag != "" {
             flags += 1;
         }
-        cards.get_mut(task.status.as_str()).unwrap().push(task);
+        if let Some(v) = cards.get_mut(&task.status) {
+            v.push(task);
+        } else {
+            eprintln!("Unknown status in cards: {}", task.status);
+        }
     }
 
-    let (tokens_5h, limit_5h, tokens_week, limit_week) = (75, 100, 33, 100);
-    let fill_5h   = ( tokens_5h * 100)   / limit_5h;
-    let fill_week = (tokens_week * 100) / limit_week;
+    let (tokens_5h, limit_5h, tokens_week, limit_week) = (75.0, 100.0, 33.0, 100.0);
+    let fill_5h   = ( tokens_5h * 100.0)   / limit_5h;
+    let fill_week = (tokens_week * 100.0) / limit_week;
 
     let html = IndexTemplate {
         tokens_used: 0,

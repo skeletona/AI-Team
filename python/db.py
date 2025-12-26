@@ -6,16 +6,16 @@ from python.models import *
 
 _INITIALIZED: set[str] = set()
 EXPECTED_COLUMNS = [
-    "id",
     "timestamp",
+    "id",
     "name",
     "status",
+    "attempt",
+    "tokens",
     "points",
     "solves",
     "category",
     "flag",
-    "attempt",
-    "tokens",
     "error",
 ]
 

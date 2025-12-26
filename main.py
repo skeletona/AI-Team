@@ -198,7 +198,7 @@ def clean(
     if "logs" in things:
         rmtree(LOGS_DIR, ignore_errors=True)
         warning(f"Deleted logs directory: {LOGS_DIR}")
-    if "database" in things:
+    if "database" in things or "db" in things or "sql" in things:
         os.remove(DB_PATH)
         warning(f"Deleted: {DB_PATH}")
 

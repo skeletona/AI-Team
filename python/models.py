@@ -25,7 +25,7 @@ class Task:
     category:   str
     timestamp:  int
     tokens:     int
-    log:        Path = 0
+    attempt:    int  = 0
     flag:       str  = ""
     error:      str  = ""
 

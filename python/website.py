@@ -168,7 +168,7 @@ def stats_view_model() -> dict:
 
     # --- Budgets ---
     limit_5h    = 20000000
-    limit_week  = 100000000
+    limit_week  = 100_000_000
 
     tokens_5h   = int(PERCENT_5H * limit_5h / 100 - tokens)
     tokens_week = int(PERCENT_WEEK * limit_week / 100 - tokens)

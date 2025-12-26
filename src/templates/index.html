@@ -100,11 +100,11 @@
             </article>
           {% endmacro %}
 
-          {{ status_panel("Queued", cards["queued"], "Waiting for execution") }}
-          {{ status_panel("Running", cards["running"], "Currently burning tokens") }}
-          {{ status_panel("Solved", cards["solved"], "Victories") }}
-          {{ status_panel("Failed", cards["failed"], "Needs attention") }}
-          {{ status_panel("Blocked", cards["blocked"], "Manually blocked from running") }}
+          {{ status_panel("Queued",  cards[&TaskStatus::Queued],  "Waiting for execution") }}
+          {{ status_panel("Running", cards[&TaskStatus::Running], "Currently burning tokens") }}
+          {{ status_panel("Solved",  cards[&TaskStatus::Solved],  "Victories") }}
+          {{ status_panel("Failed",  cards[&TaskStatus::Failed],  "Needs attention") }}
+          {{ status_panel("Blocked", cards[&TaskStatus::Blocked], "Manually blocked from running") }}
         </div>
       </section>
     </main>
