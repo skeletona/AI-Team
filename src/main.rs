@@ -1,3 +1,5 @@
+#![warn(clippy::all)]
+
 mod db;
 
 use tower_http::services::ServeDir;
@@ -33,11 +35,11 @@ struct TaskTemplate {
 
 async fn index() -> Result<Html<String>, (StatusCode, String)> {
     let mut cards = HashMap::from([
-        ("queued".into(),   Vec::new()),
-        ("running".into(),  Vec::new()),
-        ("solved".into(),   Vec::new()),
-        ("failed".into(),   Vec::new()),
-        ("block".into(),    Vec::new()),
+        ("queued" .into(), Vec::new()),
+        ("running".into(), Vec::new()),
+        ("solved" .into(), Vec::new()),
+        ("failed" .into(), Vec::new()),
+        ("blocked".into(), Vec::new()),
     ]);
     let mut runs = 0;
     let mut flags = 0;
@@ -48,7 +50,7 @@ async fn index() -> Result<Html<String>, (StatusCode, String)> {
         if task.flag != "" {
             flags += 1;
         }
-        cards.get_mut(&task.status).unwrap().push(task);
+        cards.get_mut(task.status.as_str()).unwrap().push(task);
     }
 
     let (tokens_5h, limit_5h, tokens_week, limit_week) = (75, 100, 33, 100);
