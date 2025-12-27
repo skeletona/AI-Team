@@ -93,7 +93,7 @@ def _list_attempts(task: Task) -> list[int]:
             attempt = _attempt_from_log_path(log_path)
             if attempt is not None:
                 attempts.add(attempt)
-    current_attempt = _attempt_from_log_path(task.log)
+    current_attempt = _attempt_from_log_path(CODEX_DIR / task.name / f"{CODEX_FILE}.{task.attempt}")
     if current_attempt is not None:
         attempts.add(current_attempt)
     return sorted(attempts)
@@ -133,7 +133,7 @@ def task_view_model(task: Task, selected_attempt: int | None = None) -> dict:
     if selected_attempt is None or selected_attempt not in attempts:
         selected_attempt = latest_attempt
 
-    log_path = task.log
+    log_path = CODEX_DIR / task.name / f"{CODEX_FILE}.{task.attempt}"
     if selected_attempt is not None:
         log_path = CODEX_DIR / task.name / f"{CODEX_FILE}.{selected_attempt}"
     text = load_log(log_path)
@@ -247,11 +247,12 @@ def load_codex_ws(ws, task_id: str):
         return
 
     task = db.get_entry(DB_PATH, task_id)
-    if not task.log.exists() or task is None or task.status != "running":
+    task_log = CODEX_DIR / task.name / f"{CODEX_FILE}.{attempt}"
+    if not task_log.exists() or task is None or task.status != "running":
         ws.close()
         return
 
-    with open(task.log, "r", encoding="utf-8") as f:
+    with open(task_log, "r", encoding="utf-8") as f:
         f.seek(0, 2)
         while True:
             task = db.get_entry(DB_PATH, task_id)
@@ -338,6 +339,7 @@ def get_percent() -> tuple[float]:
             secondary = float(line.split('used_percent:')[2].split(',')[0].strip())
             info(f"Tokens used in 5h:{100 - primary}%, week: {100 - secondary}%")
             return (100 - primary, 100 - secondary)
+    return (0, 0)
 
 
 def main():

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Codex Task Log</title>
+    <title>{{ task.name }}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -11,6 +11,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/ansi_up@5.2.1/ansi_up.js"></script>
   </head>
 
   <body>
@@ -20,11 +21,7 @@
     <main class="page-shell">
       <header class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">AI-Team · Detailed Thinking</p>
-          <h1>Challenge #{{ task.id }}</h1>
-          <p class="hero-subtitle">
-            {{ task.name }}
-          </p>
+          <h1>{{ task.name }}</h1>
         </div>
         <div class="hero-meta">
           <span class="status-pill status-{{ task.status }}">
@@ -52,8 +49,8 @@
           </div>
         {% endif %}
         <div class="thinking-card detail-thinking-card">
-          <div class="detail-thinking-content" data-thinking-scroll>
-            <pre data-thinking-target>{{ log }}</pre>
+          <div class="detail-thinking-content">
+            <pre data-thinking-target></pre>
           </div>
         </div>
       </section>
@@ -90,30 +87,32 @@
         activeSocket = null;
       }
 
-      function startLive() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/task/${taskId}/update`;
-        const ws = new WebSocket(wsUrl);
-        activeSocket = ws;
+      const ansiUp = new AnsiUp();
+      ansiUp.escape_for_html = true;
 
-        ws.onmessage = function(event) {
-          thinkingTarget.innerHTML += event.data;
+      function startLive() {
+        const es = new EventSource(`http://${window.location.host}/task/${taskId}/stream`);
+
+        es.onmessage = (e) => {
+          const html = ansiUp.ansi_to_html(e.data);
+          const chunk = document.createElement("span");
+          chunk.innerHTML = html;
+          thinkingTarget.appendChild(chunk);
           if (autoScrollEnabled) {
             scrollToBottom();
           }
         };
 
-        ws.onopen = function() {
-          console.log("WebSocket connected.");
-          ws.send("start_log_stream:{{ task.id }}");
+        es.onopen = (e) => {
+          console.log("SSE connected.");
         };
 
-        ws.onclose = function() {
-          console.log('WebSocket connection closed');
+        es.onclose = (e) => {
+          console.log('SSE closed');
         };
 
-        ws.onerror = function(error) {
-          console.error('WebSocket error:', error);
+        es.onerror = (e) => {
+          console.error('SSE error:', e);
         };
       }
 

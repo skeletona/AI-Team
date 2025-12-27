@@ -22,13 +22,16 @@ def build_flag_regex(flag_regex: str | None, flag_format: str | None) -> re.Patt
     else:
         escaped_spec = re.escape(flag_format)
         placeholder = re.escape("{}")
-        flag_regex = escaped_spec.replace(placeholder, r"\{[^}]{5,}+\}")
+
+        fmt_regex = escaped_spec.replace(placeholder, r"\s?\{[^}]{5,}\}")
+        ctf_regex = r"CTF\s?\{[^}]{5,}\}"
+        flag_regex = rf"(?:{fmt_regex}|{ctf_regex})"
         try:
-            flag_regex = re.compile(flag_regex)
+            pattern = re.compile(flag_regex, re.IGNORECASE)
         except re.error as exc:
             raise ValueError(f"FLAG_FORMAT {spec!r} is not a valid format. Example: testCTF{{}}") from exc
 
-    return flag_regex
+    return pattern
 
 
 FLAG_RE = build_flag_regex(FLAG_REGEX, FLAG_FORMAT)
@@ -76,9 +79,10 @@ def run_codex(task: Task, prompt: str) -> str:
     completed_normally = False
     output = ""
     stop_flag = CODEX_DIR / task.name / "stop.flag"
+    task_log = CODEX_DIR / task.name / f"{CODEX_FILE}.{task.attempt}"
 
-    task.log.parent.mkdir(parents=True, exist_ok=True)
-    with task.log.open("w", encoding="utf-8") as fh:
+    task_log.parent.mkdir(parents=True, exist_ok=True)
+    with task_log.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -184,7 +188,7 @@ def process_task(task: Task) -> int:
                 info(f"{task.name}: Has a ctfd_owl instance")
 
         prompt = build_codex_prompt(task, instance)
-        start_attempt = int(str(task.log).split(".")[-1])
+        start_attempt = int(str(CODEX_DIR / task.name / f"{CODEX_FILE}.{task.attempt}").split(".")[-1])
 
         for attempt in range(start_attempt + 1, start_attempt + MAX_CODEX_ATTEMPTS + 1):
             if STOP_EVENT:
@@ -274,6 +278,7 @@ def run_tasks():
         error(f"task directory does not exist: {TASKS_DIR}")
         return 1
 
+    info("starting")
     graceful_exit = False
     active: set[concurrent.futures.Future] = set()
     future_to_task: dict[concurrent.futures.Future, Task] = {}
@@ -309,6 +314,7 @@ def run_tasks():
                 shuffle(pending)
             while pending and len(active) < MAX_CODEX_WORKERS:
                 task = pending.pop(0)
+                info(f"Starting: {task.name}")
                 fut = executor.submit(process_task, task)
                 active.add(fut)
                 future_to_task[fut] = task

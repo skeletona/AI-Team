@@ -172,7 +172,7 @@ def read_entries(path: Path) -> list[Task]:
             flag=row["flag"],
             tokens=row["tokens"],
             error=row["error"],
-            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"] or 0}")
+            attempt=row["attempt"]
         ) for row in rows]
 
 
@@ -204,7 +204,7 @@ def get_entry(path: Path, id: str) -> Task | None:
             flag=row["flag"],
             tokens=row["tokens"],
             error=row["error"],
-            log=(CODEX_DIR / row["name"] / f"{CODEX_FILE}.{row["attempt"]}")
+            attempt=row["attempt"]
         )
 
 
@@ -238,17 +238,17 @@ def change_task(
     if error      is not None: updates["error"]     = error
     if flag       is not None: updates["flag"]      = flag
     if name       is not None: updates["name"]      = name
-    if log        is not None: updates["log"]       = log
+    if attempt    is not None: updates["attempt"]   = attempt
+    if log        is not None: updates["attempt"]   = int(str(log).split(".")[-1])
 
     if tokens:
-        updates["tokens"]  = task.tokens  + tokens
+        updates["tokens"] = task.tokens + tokens
+    else:
+        updates["tokens"] = tokens or 0
     updates["timestamp"] = now()
 
     debug(f"{task.name}: Updating: {updates}")
     new_task = replace(task, **updates)
-
-    if attempt:
-        updates["attempt"] = attempt
 
     insert_entry(task.id, **updates)
     return new_task

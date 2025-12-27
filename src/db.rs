@@ -1,6 +1,13 @@
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{Connection, Result, OptionalExtension};
-use std::fmt;
+use std::{
+    path::PathBuf,
+    fmt,
+};
+
+
+const TASK_COLUMNS: &str =
+    "timestamp, id, name, status, attempt, tokens, points, solves, category, flag, error";
 
 
 #[derive(Eq, Hash, PartialEq)]
@@ -31,7 +38,7 @@ impl FromSql for TaskStatus {
             "running" => Ok(Self::Running),
             "solved"  => Ok(Self::Solved),
             "failed"  => Ok(Self::Failed),
-            "blocked"   => Ok(Self::Blocked),
+            "blocked" => Ok(Self::Blocked),
             other => Err(FromSqlError::Other(Box::new(
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid status: {other}"))
             ))),
@@ -59,6 +66,14 @@ pub struct Task {
     pub category:   String,
     pub flag:       String,
     pub error:      String,
+}
+
+impl Task {
+    pub fn log_path(&self) -> PathBuf {
+        PathBuf::from("./codex")
+            .join(&self.name)
+            .join(format!("codex.log.{}", self.attempt))
+    }
 }
 
 pub fn init_db(conn: &Connection) -> Result<()> {
@@ -89,11 +104,9 @@ pub fn list_tasks() -> Result<Vec<Task>> {
     let conn = Connection::open("tasks.db")?;
     init_db(&conn)?;
 
-    let mut stmt = conn.prepare("
-            SELECT timestamp, id, name, status, attempt, tokens, points, solves, category, flag, error
-            FROM tasks
-            ORDER BY timestamp DESC
-    ")?;
+    let mut stmt = conn.prepare(
+        &format!("SELECT {} FROM tasks ORDER BY timestamp DESC", TASK_COLUMNS)
+    )?;
 
     let rows = stmt.query_map([], |row| {
         Ok(Task {
@@ -119,10 +132,8 @@ pub fn get_task(id: &str) -> Result<Option<Task>> {
     let conn = Connection::open("tasks.db")?;
     init_db(&conn)?;
 
-    let task = conn.query_row("
-        SELECT timestamp, id, name, status, attempt, tokens, points, solves, category, flag, error
-        FROM tasks
-        WHERE id = ?1",
+    let task = conn.query_row(
+        &format!("SELECT {} FROM tasks WHERE id = ?1", TASK_COLUMNS),
         [id],
         |row| {
             Ok(Task {
