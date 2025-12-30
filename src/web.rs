@@ -23,8 +23,7 @@ use std::{
     io::SeekFrom,
 };
 
-mod db;
-use db::{Task, TaskStatus};
+use crate::db::{self, Task, TaskStatus};
 
 
 #[derive(Template)]
@@ -208,10 +207,10 @@ async fn task_stream(Path(id): Path<String>) -> Sse<impl Stream<Item = Result<Ev
 
 
 #[tokio::main]
-async fn main() {
+pub async fn start_website() {
     let app = Router::new()
-        .route("/", get(index))
-        .route("/task/{id}", get(task))
+        .route("/",                 get(index))
+        .route("/task/{id}",        get(task))
         .route("/task/{id}/stream", get(task_stream))
         .nest_service(
             "/static",
